@@ -24,19 +24,22 @@ router = APIRouter()
 
 def _resolve_tts_options(
     engine: str,
+    language: str,
     profile_overrides: dict | None,
     request_overrides: dict | None,
 ) -> dict | None:
-    """Resolve options for an engine, layering profile then request overrides.
+    """Resolve options for an engine, layering language, profile, then request.
 
     Resolution order (last wins, FORK_NOTES §7b):
-        engine PARAM_SPEC defaults -> profile.option_overrides -> request.tts_params
+        engine PARAM_SPEC defaults -> language defaults -> profile.option_overrides
+            -> request.tts_params
 
-    Profile overrides are applied leniently (keys not in this engine's spec are
-    ignored — a per-voice tuning may target a different default engine), while
-    request overrides are strict: an unknown key or out-of-range value is a 422.
+    Language and profile layers are applied leniently (keys not in this engine's
+    spec, or out of range for it, are dropped — a per-voice tuning may target a
+    different default engine). Request overrides are strict: an unknown key or
+    out-of-range value is a 422.
     """
-    from ..backends import get_param_spec
+    from ..backends import get_param_spec, get_engine_language_defaults
     from ..utils.param_spec import resolve_options, filter_applicable, OptionError
 
     spec = get_param_spec(engine)
@@ -50,10 +53,15 @@ def _resolve_tts_options(
             )
         return None
     try:
-        # engine defaults + profile — fully lenient: keys not in THIS engine's
-        # spec, or out of its range, are dropped (a per-voice tuning may target
-        # a different default engine, so it must never 422 an unrelated request).
-        base = resolve_options(spec, filter_applicable(spec, profile_overrides))
+        # engine defaults -> language -> profile (all lenient: keys not in THIS
+        # engine's spec, or out of its range, are dropped so they never 422 an
+        # unrelated request).
+        lang_defaults = get_engine_language_defaults(engine, language)
+        base = resolve_options(
+            spec,
+            filter_applicable(spec, lang_defaults),
+            filter_applicable(spec, profile_overrides),
+        )
         # + request (strict: unknown key / out-of-range -> 422)
         return resolve_options(spec, base, request_overrides or {})
     except OptionError as e:
@@ -141,7 +149,7 @@ async def generate_speech(
     # Resolve/validate tuning options BEFORE creating the generation row, so a
     # bad option 422s cleanly instead of orphaning a "generating" row.
     resolved_options = _resolve_tts_options(
-        engine, getattr(profile, "option_overrides", None), data.tts_params
+        engine, data.language, getattr(profile, "option_overrides", None), data.tts_params
     )
     resolved_verify = _resolve_verify_options(data.verify_config)
 
@@ -408,7 +416,7 @@ async def stream_speech(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     resolved_options = _resolve_tts_options(
-        engine, getattr(profile, "option_overrides", None), data.tts_params
+        engine, data.language, getattr(profile, "option_overrides", None), data.tts_params
     )
     tts_model = get_tts_backend_for_engine(engine)
     model_size = data.model_size or "1.7B"

@@ -743,6 +743,24 @@ def get_param_spec(engine: str) -> list:
     return list(getattr(backend, "PARAM_SPEC", []) or [])
 
 
+def get_engine_language_defaults(engine: str, language: str) -> dict:
+    """Per-language option deltas for an engine (the §7b language layer).
+
+    Returns {} for engines without language-specific tuning or when unavailable.
+    """
+    try:
+        backend = get_tts_backend_for_engine(engine)
+    except Exception:
+        return {}
+    fn = getattr(backend, "language_defaults", None)
+    if fn is None:
+        return {}
+    try:
+        return dict(fn(language) or {})
+    except Exception:
+        return {}
+
+
 def list_engine_specs() -> list[dict]:
     """Capability list for ``GET /engines``: engine, display name, param spec."""
     from ..utils.param_spec import spec_as_dicts

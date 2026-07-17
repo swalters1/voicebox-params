@@ -24,6 +24,7 @@ from .base import (
     model_load_progress,
     patch_chatterbox_f32,
 )
+from ..utils.param_spec import Param, resolve_options, split_call_options
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,26 @@ _MTL_WEIGHT_FILES = [
 class ChatterboxTTSBackend:
     """Chatterbox Multilingual TTS backend for voice cloning."""
 
+    # Declarative tuning surface (FORK_NOTES §7). Defaults mirror _GLOBAL_DEFAULTS;
+    # per-language deltas (_LANG_DEFAULTS) are applied as the language layer of
+    # option resolution, exposed via language_defaults() and layered at the route.
+    PARAM_SPEC: ClassVar[list] = [
+        Param("exaggeration", 0.5, 0.0, 1.0, desc="Expressiveness / emphasis"),
+        Param("cfg_weight", 0.5, 0.0, 1.0, desc="Classifier-free guidance weight"),
+        Param("temperature", 0.8, 0.05, 2.0, desc="Sampling temperature"),
+        Param("repetition_penalty", 2.0, 1.0, 3.0, desc="Penalize repeats"),
+    ]
+
     # Class-level lock for torch.load monkey-patching
     _load_lock: ClassVar[threading.Lock] = threading.Lock()
+
+    def language_defaults(self, language: str) -> dict:
+        """Per-language option deltas — the language layer of resolution (§7b).
+
+        Returns only the keys that differ for *language* (empty for languages
+        with no special tuning, which then fall back to the PARAM_SPEC defaults).
+        """
+        return dict(self._LANG_DEFAULTS.get(language, {}))
 
     def __init__(self):
         self.model = None
@@ -171,6 +190,7 @@ class ChatterboxTTSBackend:
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio using Chatterbox Multilingual TTS.
@@ -181,6 +201,9 @@ class ChatterboxTTSBackend:
             language: BCP-47 language code
             seed: Random seed for reproducibility
             instruct: Unused (protocol compatibility)
+            options: Resolved PARAM_SPEC options. The route already layered the
+                language deltas (see language_defaults) under any profile/request
+                overrides, so this just fills defaults and spreads.
 
         Returns:
             Tuple of (audio_array, sample_rate)
@@ -192,8 +215,8 @@ class ChatterboxTTSBackend:
             logger.warning(f"Reference audio not found: {ref_audio}")
             ref_audio = None
 
-        # Merge language-specific defaults with global defaults
-        lang_defaults = self._LANG_DEFAULTS.get(language, self._GLOBAL_DEFAULTS)
+        resolved = resolve_options(self.PARAM_SPEC, options or {}, reject_unknown=False)
+        call_kwargs = split_call_options(self.PARAM_SPEC, resolved)
 
         def _generate_sync():
             import torch
@@ -201,16 +224,13 @@ class ChatterboxTTSBackend:
             if seed is not None:
                 manual_seed(seed, self._device)
 
-            logger.info(f"[Chatterbox] Generating: lang={language}")
+            logger.info("[Chatterbox] Generating: lang=%s options=%s", language, call_kwargs)
 
             wav = self.model.generate(
                 text,
                 language_id=language,
                 audio_prompt_path=ref_audio,
-                exaggeration=lang_defaults["exaggeration"],
-                cfg_weight=lang_defaults["cfg_weight"],
-                temperature=lang_defaults["temperature"],
-                repetition_penalty=lang_defaults["repetition_penalty"],
+                **call_kwargs,
             )
 
             # Convert tensor -> numpy
