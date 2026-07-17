@@ -23,8 +23,11 @@ Voicebox is a **Tauri** app (Rust shell + web frontend) that talks over HTTP to 
   sidecar bundles them. Use `just setup-python` (creates `backend/venv`, installs
   `requirements.txt`, then `chatterbox-tts --no-deps` / `hume-tada --no-deps`).
 - **CUDA 12.8** toolkit for the `--cuda` sidecar (matches `cu128` in `release.yml`).
-- **Tauri updater signing keys** for a *signed* release (`~/.tauri/voicebox.key`; see
-  `scripts/prepare-release.sh`).
+- **Tauri updater signing keys** — *only if you re-enable signed auto-updates*. The
+  fork ships with `bundle.createUpdaterArtifacts: false` (see "Signing" below), so a
+  plain unsigned installer builds with **no key needed**. Upstream defaulted to
+  `"v1Compatible"`, which made `tauri build` fail on any machine/CI without
+  `TAURI_SIGNING_PRIVATE_KEY`.
 
 > The dev server we run for the pipeline (`D:\code\voicebox-dev`) is a **turbo-only**
 > venv — fine for running, **not** for building a shippable sidecar. A release build
@@ -71,6 +74,17 @@ feature branch  ->  PR into main  ->  merge  ->  git tag vX.Y.Z  ->  push tag
 Enable Actions on the fork (`swalters1/voicebox-params`) and it runs on push/tag with
 no extra setup, aside from secrets: the Tauri **signing key** + password (release
 signing/updater) must be added as repo secrets, mirroring upstream's.
+
+## Signing / auto-updates
+
+The fork sets `bundle.createUpdaterArtifacts: false` in
+`tauri/src-tauri/tauri.conf.json` so CI and local builds produce a normal
+(unsigned) installer without a signing key — fine for installing and running.
+To ship **signed auto-updates** instead, generate your own key
+(`cd tauri && bun tauri signer generate -w ~/.tauri/voicebox.key`), put its public
+key in `plugins.updater.pubkey`, set `createUpdaterArtifacts` back to
+`"v1Compatible"`, and add `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`) as repo
+secrets. Do **not** reuse upstream's pubkey — you don't hold its private key.
 
 ## Fork-specific build notes
 
