@@ -122,6 +122,7 @@ async def update_generation_status(
     duration: Optional[float] = None,
     error: Optional[str] = None,
     seed: Optional[int] = None,
+    gen_params: Optional[dict] = None,
 ) -> Optional[GenerationResponse]:
     """Update the status of a generation (used by async generation flow)."""
     generation = db.query(DBGeneration).filter_by(id=generation_id).first()
@@ -139,6 +140,9 @@ async def update_generation_status(
         # Persist the concrete seed actually used so an auto-seeded render can
         # be replayed exactly later.
         generation.seed = seed
+    if gen_params is not None:
+        # Effective inference params / per-chunk seeds / verification report.
+        generation.gen_params = gen_params
 
     db.commit()
     db.refresh(generation)

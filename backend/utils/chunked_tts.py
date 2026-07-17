@@ -9,6 +9,7 @@ Short text (≤ max_chunk_chars) uses the single-shot fast path with zero
 overhead.
 """
 
+import inspect
 import logging
 import random
 import re
@@ -234,6 +235,18 @@ def concatenate_audio_chunks(
     return result
 
 
+def _backend_accepts_params(backend) -> bool:
+    """True if the backend's ``generate`` declares a ``params`` argument.
+
+    Lets us forward per-request tuning only to engines that support it, so
+    untuned backends keep working with the same call as before.
+    """
+    try:
+        return "params" in inspect.signature(backend.generate).parameters
+    except (ValueError, TypeError):
+        return False
+
+
 async def _generate_one_chunk(
     backend,
     chunk_text: str,
@@ -244,6 +257,7 @@ async def _generate_one_chunk(
     trim_fn,
     verify_fn,
     max_verify_attempts: int,
+    gen_params: dict | None = None,
 ) -> Tuple[np.ndarray, int, int, list | None]:
     """Generate a single chunk, retrying with fresh seeds if verification fails.
 
@@ -258,6 +272,11 @@ async def _generate_one_chunk(
     audio: np.ndarray | None = None
     sample_rate = 0
 
+    # Forward tuning params only to backends that accept them.
+    extra = {}
+    if gen_params and _backend_accepts_params(backend):
+        extra["params"] = gen_params
+
     total_tries = max_verify_attempts if verify_fn is not None else 1
     for attempt in range(total_tries):
         audio, sample_rate = await backend.generate(
@@ -266,6 +285,7 @@ async def _generate_one_chunk(
             language,
             current_seed,
             instruct,
+            **extra,
         )
         if trim_fn is not None:
             audio = trim_fn(audio, sample_rate)
@@ -302,6 +322,7 @@ async def generate_chunked(
     trim_fn=None,
     verify_fn=None,
     max_verify_attempts: int = 3,
+    gen_params: dict | None = None,
 ) -> ChunkedTTSResult:
     """Generate audio with automatic chunking for long text.
 
@@ -366,6 +387,7 @@ async def generate_chunked(
             trim_fn,
             verify_fn,
             max_verify_attempts,
+            gen_params,
         )
         return ChunkedTTSResult(
             audio=audio,
@@ -409,6 +431,7 @@ async def generate_chunked(
             trim_fn,
             verify_fn,
             max_verify_attempts,
+            gen_params,
         )
 
         audio_chunks.append(np.asarray(chunk_audio, dtype=np.float32))

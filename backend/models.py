@@ -76,6 +76,43 @@ class ProfileSampleResponse(BaseModel):
         from_attributes = True
 
 
+class TurboParams(BaseModel):
+    """Chatterbox Turbo inference parameters.
+
+    All fields are optional; any left unset fall back to the engine defaults
+    (see ``TURBO_DEFAULT_PARAMS`` in the chatterbox_turbo backend). Ranges are
+    permissive on purpose — this is a power-user knob for the fork.
+    """
+
+    temperature: Optional[float] = Field(None, ge=0.0, le=5.0)
+    top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
+    top_k: Optional[int] = Field(None, ge=0, le=100000)
+    repetition_penalty: Optional[float] = Field(None, ge=1.0, le=10.0)
+
+    def to_overrides(self) -> dict:
+        """Return only the explicitly-set fields as a plain dict."""
+        return self.model_dump(exclude_none=True)
+
+
+class WhisperOptions(BaseModel):
+    """Whisper decode options for transcription.
+
+    These are the knobs that address the "short text" hallucination problem
+    (``no_speech_threshold``, ``condition_on_previous_text``, the temperature
+    fallback list, etc.). All optional; unset fields use the backend defaults.
+    """
+
+    temperature: Optional[float] = Field(None, ge=0.0, le=1.0)
+    no_speech_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    logprob_threshold: Optional[float] = Field(None, ge=-20.0, le=0.0)
+    compression_ratio_threshold: Optional[float] = Field(None, ge=0.0, le=100.0)
+    condition_on_previous_text: Optional[bool] = None
+
+    def to_overrides(self) -> dict:
+        """Return only the explicitly-set fields as a plain dict."""
+        return self.model_dump(exclude_none=True)
+
+
 class GenerationRequest(BaseModel):
     """Request model for voice generation."""
 
@@ -100,6 +137,17 @@ class GenerationRequest(BaseModel):
     effects_chain: Optional[List["EffectConfig"]] = Field(
         None, description="Effects chain to apply after generation (overrides profile default)"
     )
+    tts_params: Optional[TurboParams] = Field(
+        None,
+        description="Engine inference parameter overrides (currently Chatterbox Turbo). Unset fields use engine defaults.",
+    )
+    verify: bool = Field(
+        default=False,
+        description="Transcribe each rendered chunk and re-seed on mismatch (verify loop).",
+    )
+    max_verify_attempts: int = Field(
+        default=3, ge=1, le=10, description="Max re-seed attempts per chunk when verify is enabled."
+    )
 
 
 class GenerationResponse(BaseModel):
@@ -119,6 +167,7 @@ class GenerationResponse(BaseModel):
     error: Optional[str] = None
     is_favorited: bool = False
     source: str = "manual"
+    gen_params: Optional[dict] = None
     created_at: datetime
     versions: Optional[List["GenerationVersionResponse"]] = None
     active_version_id: Optional[str] = None
@@ -173,6 +222,9 @@ class TranscriptionRequest(BaseModel):
 
     language: Optional[str] = Field(None, pattern="^(en|zh|ja|ko|de|fr|ru|pt|es|it)$")
     model: Optional[str] = Field(None, pattern="^(base|small|medium|large|turbo)$")
+    options: Optional[WhisperOptions] = Field(
+        None, description="Whisper decode option overrides (e.g. no_speech_threshold)."
+    )
 
 
 class TranscriptionResponse(BaseModel):

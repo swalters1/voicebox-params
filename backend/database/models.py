@@ -82,6 +82,11 @@ class Generation(Base):
     # profile's personality LLM before TTS. Future sources (bulk import,
     # agent replies, etc.) can extend this.
     source = Column(String, nullable=False, default="manual")
+    # Effective engine/inference parameters used for this render (TTS decode
+    # params, per-chunk seeds, and any verification report). Stored as JSON so
+    # a completed render can be inspected and replayed exactly. Null for rows
+    # created before this column existed or by paths that don't record params.
+    gen_params = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

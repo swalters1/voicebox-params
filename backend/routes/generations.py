@@ -139,6 +139,7 @@ async def generate_speech(
             mode="generate",
             max_chunk_chars=data.max_chunk_chars,
             crossfade_ms=data.crossfade_ms,
+            tts_params=data.tts_params.to_overrides() if data.tts_params else None,
         )
     )
 
@@ -362,6 +363,7 @@ async def stream_speech(
         max_chunk_chars=data.max_chunk_chars,
         crossfade_ms=data.crossfade_ms,
         trim_fn=trim_fn,
+        gen_params=data.tts_params.to_overrides() if data.tts_params else None,
     )
     audio, sample_rate = result.audio, result.sample_rate
 

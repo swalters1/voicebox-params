@@ -21,8 +21,23 @@ async def transcribe_audio(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     model: str | None = Form(None),
+    options: str | None = Form(None),
 ):
-    """Transcribe audio file to text."""
+    """Transcribe audio file to text.
+
+    ``options`` is an optional JSON string of Whisper decode overrides
+    (see models.WhisperOptions), e.g. ``{"no_speech_threshold": 0.2}``.
+    """
+    whisper_options: dict | None = None
+    if options:
+        import json
+
+        try:
+            whisper_options = models.WhisperOptions(**json.loads(options)).to_overrides()
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid transcription options: {e}"
+            )
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         while chunk := await file.read(UPLOAD_CHUNK_SIZE):
             tmp.write(chunk)
@@ -69,7 +84,9 @@ async def transcribe_audio(
                 },
             )
 
-        text = await whisper_model.transcribe(tmp_path, language, model_size)
+        text = await whisper_model.transcribe(
+            tmp_path, language, model_size, whisper_options
+        )
 
         return models.TranscriptionResponse(
             text=text,

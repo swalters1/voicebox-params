@@ -105,9 +105,16 @@ class TTSBackend(Protocol):
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        params: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio from text.
+
+        Args:
+            params: Optional engine-specific inference overrides. Backends that
+                don't support tuning may ignore it; callers should only pass it
+                to backends that declare a ``params`` parameter (see
+                ``generate_chunked``'s capability detection).
 
         Returns:
             Tuple of (audio_array, sample_rate)
@@ -145,9 +152,15 @@ class STTBackend(Protocol):
         audio_path: str,
         language: Optional[str] = None,
         model_size: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> str:
         """
         Transcribe audio to text.
+
+        Args:
+            options: Optional Whisper decode overrides (e.g.
+                ``no_speech_threshold``, ``condition_on_previous_text``).
+                Unsupported keys are ignored gracefully.
 
         Returns:
             Transcribed text

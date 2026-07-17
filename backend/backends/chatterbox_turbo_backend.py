@@ -29,6 +29,15 @@ logger = logging.getLogger(__name__)
 
 CHATTERBOX_TURBO_HF_REPO = "ResembleAI/chatterbox-turbo"
 
+# Default sampling parameters for Turbo generation. Overridable per-request via
+# the ``params`` argument to ``generate`` (see models.TurboParams).
+TURBO_DEFAULT_PARAMS = {
+    "temperature": 0.8,
+    "top_k": 1000,
+    "top_p": 0.95,
+    "repetition_penalty": 1.2,
+}
+
 # Files that must be present for the turbo model
 _TURBO_WEIGHT_FILES = [
     "t3_turbo_v1.safetensors",
@@ -153,6 +162,7 @@ class ChatterboxTurboTTSBackend:
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        params: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio using Chatterbox Turbo TTS.
@@ -165,6 +175,9 @@ class ChatterboxTurboTTSBackend:
             language: Ignored (Turbo is English-only)
             seed: Random seed for reproducibility
             instruct: Unused (protocol compatibility)
+            params: Optional overrides for temperature/top_k/top_p/
+                repetition_penalty. Unset keys fall back to
+                ``TURBO_DEFAULT_PARAMS``.
 
         Returns:
             Tuple of (audio_array, sample_rate)
@@ -176,21 +189,29 @@ class ChatterboxTurboTTSBackend:
             logger.warning(f"Reference audio not found: {ref_audio}")
             ref_audio = None
 
+        # Merge caller overrides over the defaults, ignoring unknown keys so a
+        # stray field can never reach the underlying model.generate() call.
+        effective = dict(TURBO_DEFAULT_PARAMS)
+        if params:
+            effective.update(
+                {k: v for k, v in params.items() if k in TURBO_DEFAULT_PARAMS}
+            )
+
         def _generate_sync():
             import torch
 
             if seed is not None:
                 manual_seed(seed, self._device)
 
-            logger.info("[Chatterbox Turbo] Generating (English)")
+            logger.info("[Chatterbox Turbo] Generating (English) params=%s", effective)
 
             wav = self.model.generate(
                 text,
                 audio_prompt_path=ref_audio,
-                temperature=0.8,
-                top_k=1000,
-                top_p=0.95,
-                repetition_penalty=1.2,
+                temperature=effective["temperature"],
+                top_k=effective["top_k"],
+                top_p=effective["top_p"],
+                repetition_penalty=effective["repetition_penalty"],
             )
 
             # Convert tensor -> numpy

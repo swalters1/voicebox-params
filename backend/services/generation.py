@@ -42,6 +42,7 @@ async def run_generation(
     max_chunk_chars: Optional[int] = None,
     crossfade_ms: Optional[int] = None,
     version_id: Optional[str] = None,
+    tts_params: Optional[dict] = None,
 ) -> None:
     """Execute TTS inference and persist the result.
 
@@ -83,9 +84,19 @@ async def run_generation(
             gen_kwargs["max_chunk_chars"] = max_chunk_chars
         if crossfade_ms is not None:
             gen_kwargs["crossfade_ms"] = crossfade_ms
+        if tts_params:
+            gen_kwargs["gen_params"] = tts_params
 
         result = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
         audio, sample_rate, resolved_seed = result.audio, result.sample_rate, result.seed
+
+        # Assemble the reproducible record of what actually ran.
+        gen_params_record: dict = {
+            "tts_params": tts_params or {},
+            "chunk_seeds": result.chunk_seeds,
+        }
+        if result.verify is not None:
+            gen_params_record["verify"] = result.verify
 
         # --- Normalize (generate and regenerate always; retry skips) -----
         if normalize or mode == "regenerate":
@@ -127,6 +138,7 @@ async def run_generation(
             audio_path=final_path,
             duration=duration,
             seed=resolved_seed,
+            gen_params=gen_params_record,
         )
 
     except asyncio.CancelledError:
