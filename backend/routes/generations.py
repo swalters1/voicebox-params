@@ -352,7 +352,7 @@ async def stream_speech(
 
         trim_fn = trim_tts_output
 
-    audio, sample_rate = await generate_chunked(
+    result = await generate_chunked(
         tts_model,
         data.text,
         voice_prompt,
@@ -363,6 +363,7 @@ async def stream_speech(
         crossfade_ms=data.crossfade_ms,
         trim_fn=trim_fn,
     )
+    audio, sample_rate = result.audio, result.sample_rate
 
     effects_chain_config = None
     if data.effects_chain is not None:

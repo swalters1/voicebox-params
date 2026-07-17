@@ -84,7 +84,8 @@ async def run_generation(
         if crossfade_ms is not None:
             gen_kwargs["crossfade_ms"] = crossfade_ms
 
-        audio, sample_rate = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
+        result = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
+        audio, sample_rate, resolved_seed = result.audio, result.sample_rate, result.seed
 
         # --- Normalize (generate and regenerate always; retry skips) -----
         if normalize or mode == "regenerate":
@@ -125,6 +126,7 @@ async def run_generation(
             db=bg_db,
             audio_path=final_path,
             duration=duration,
+            seed=resolved_seed,
         )
 
     except asyncio.CancelledError:
@@ -299,9 +301,10 @@ async def generate_audio_sync(
     if crossfade_ms is not None:
         gen_kwargs["crossfade_ms"] = crossfade_ms
 
-    audio, sample_rate = await generate_chunked(
+    result = await generate_chunked(
         tts_model, text, voice_prompt, **gen_kwargs
     )
+    audio, sample_rate = result.audio, result.sample_rate
 
     if normalize:
         audio = normalize_audio(audio)

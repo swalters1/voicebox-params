@@ -10,12 +10,45 @@ overhead.
 """
 
 import logging
+import random
 import re
+from dataclasses import dataclass, field
 from typing import List, Tuple
 
 import numpy as np
 
 logger = logging.getLogger("voicebox.chunked-tts")
+
+# Upper bound for auto-generated seeds. Kept within int32 so the value round-
+# trips cleanly through torch.manual_seed and the ``Generation.seed`` integer
+# column regardless of platform.
+_MAX_SEED = 2**31 - 1
+
+
+def resolve_seed(seed: int | None) -> int:
+    """Return *seed* if given, otherwise a fresh random seed.
+
+    Renders must always run with a concrete seed so the exact value can be
+    recorded and replayed later. Passing ``None`` down to the backends left
+    the RNG in its ambient state and produced un-reproducible audio.
+    """
+    return seed if seed is not None else random.randint(0, _MAX_SEED)
+
+
+@dataclass
+class ChunkedTTSResult:
+    """Result of a (possibly chunked) TTS generation.
+
+    Carries the assembled audio plus the seeds actually used, so callers can
+    persist a reproducible record of the render. ``verify`` is populated only
+    when a verification hook runs (see ``generate_chunked``'s ``verify_fn``).
+    """
+
+    audio: np.ndarray
+    sample_rate: int
+    seed: int
+    chunk_seeds: List[int] = field(default_factory=list)
+    verify: List[dict] | None = None
 
 # Default chunk size in characters.  Can be overridden per-request via
 # the ``max_chunk_chars`` field on GenerationRequest.
@@ -201,6 +234,62 @@ def concatenate_audio_chunks(
     return result
 
 
+async def _generate_one_chunk(
+    backend,
+    chunk_text: str,
+    voice_prompt: dict,
+    language: str,
+    seed: int,
+    instruct: str | None,
+    trim_fn,
+    verify_fn,
+    max_verify_attempts: int,
+) -> Tuple[np.ndarray, int, int, list | None]:
+    """Generate a single chunk, retrying with fresh seeds if verification fails.
+
+    Returns ``(audio, sample_rate, seed_used, attempts)`` where *attempts* is
+    ``None`` when no ``verify_fn`` was supplied, or a list of per-attempt
+    ``{"seed", "ok", ...}`` records otherwise. The audio returned is always the
+    last attempt; on total failure that is the final (still-rejected) render so
+    the pipeline degrades gracefully rather than dropping a chunk.
+    """
+    attempts: list = []
+    current_seed = seed
+    audio: np.ndarray | None = None
+    sample_rate = 0
+
+    total_tries = max_verify_attempts if verify_fn is not None else 1
+    for attempt in range(total_tries):
+        audio, sample_rate = await backend.generate(
+            chunk_text,
+            voice_prompt,
+            language,
+            current_seed,
+            instruct,
+        )
+        if trim_fn is not None:
+            audio = trim_fn(audio, sample_rate)
+
+        if verify_fn is None:
+            return audio, sample_rate, current_seed, None
+
+        ok, detail = await verify_fn(chunk_text, audio, sample_rate)
+        attempts.append({"seed": current_seed, "ok": ok, **detail})
+        if ok:
+            return audio, sample_rate, current_seed, attempts
+
+        logger.info(
+            "Chunk verification failed (attempt %d/%d), re-seeding: %s",
+            attempt + 1,
+            total_tries,
+            detail,
+        )
+        # Re-seed with a fresh random value for the next attempt.
+        current_seed = random.randint(0, _MAX_SEED)
+
+    return audio, sample_rate, attempts[-1]["seed"], attempts
+
+
 async def generate_chunked(
     backend,
     text: str,
@@ -211,16 +300,22 @@ async def generate_chunked(
     max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
     crossfade_ms: int = 50,
     trim_fn=None,
-) -> Tuple[np.ndarray, int]:
+    verify_fn=None,
+    max_verify_attempts: int = 3,
+) -> ChunkedTTSResult:
     """Generate audio with automatic chunking for long text.
 
     For text shorter than *max_chunk_chars* this is a thin wrapper around
-    ``backend.generate()`` with zero overhead.
+    ``backend.generate()``.
 
     For longer text the input is split at natural sentence boundaries,
     each chunk is generated independently, optionally trimmed (useful for
     Chatterbox engines that hallucinate trailing noise), and the results
     are concatenated with a crossfade (or hard cut if *crossfade_ms* is 0).
+
+    A concrete seed is always resolved before generation (a random one when
+    *seed* is ``None``) so the exact value can be recorded and replayed. The
+    resolved seeds are returned on the result.
 
     Parameters
     ----------
@@ -229,7 +324,8 @@ async def generate_chunked(
     text : str
         Input text (may be arbitrarily long).
     voice_prompt, language, seed, instruct
-        Forwarded to ``backend.generate()`` verbatim.
+        Forwarded to ``backend.generate()``; *seed* is resolved to a concrete
+        value first.
     max_chunk_chars : int
         Maximum characters per chunk (default 800).
     crossfade_ms : int
@@ -239,25 +335,45 @@ async def generate_chunked(
         Optional ``(audio, sample_rate) -> audio`` post-processing
         function applied to each chunk before concatenation (e.g.
         ``trim_tts_output`` for Chatterbox engines).
+    verify_fn : callable | None
+        Optional async ``(chunk_text, audio, sample_rate) -> (ok, detail)``
+        hook. When supplied, a chunk whose verification returns ``ok=False``
+        is re-generated with a fresh seed up to *max_verify_attempts* times.
+        ``detail`` is a dict merged into the per-attempt record.
+    max_verify_attempts : int
+        Maximum attempts per chunk when *verify_fn* is supplied (default 3).
 
     Returns
     -------
-    (audio, sample_rate) : Tuple[np.ndarray, int]
+    ChunkedTTSResult
+        Assembled audio, sample rate, resolved base seed, per-chunk seeds, and
+        (when verified) the per-chunk verification report.
     """
+    resolved_seed = resolve_seed(seed)
     chunks = split_text_into_chunks(text, max_chunk_chars)
 
     if len(chunks) <= 1:
-        # Short text — single-shot fast path
-        audio, sample_rate = await backend.generate(
-            text,
+        # Short text — single chunk. Fall back to the raw text when the
+        # splitter returned nothing (e.g. whitespace-only input).
+        chunk_text = chunks[0] if chunks else text
+        audio, sample_rate, seed_used, attempts = await _generate_one_chunk(
+            backend,
+            chunk_text,
             voice_prompt,
             language,
-            seed,
+            resolved_seed,
             instruct,
+            trim_fn,
+            verify_fn,
+            max_verify_attempts,
         )
-        if trim_fn is not None:
-            audio = trim_fn(audio, sample_rate)
-        return audio, sample_rate
+        return ChunkedTTSResult(
+            audio=audio,
+            sample_rate=sample_rate,
+            seed=seed_used,
+            chunk_seeds=[seed_used],
+            verify=[{"chunk": 0, "attempts": attempts}] if attempts is not None else None,
+        )
 
     # Long text — chunked generation
     logger.info(
@@ -267,6 +383,8 @@ async def generate_chunked(
         max_chunk_chars,
     )
     audio_chunks: List[np.ndarray] = []
+    chunk_seeds: List[int] = []
+    verify_report: List[dict] = []
     sample_rate: int | None = None
 
     for i, chunk_text in enumerate(chunks):
@@ -279,21 +397,32 @@ async def generate_chunked(
         # Vary the seed per chunk to avoid correlated RNG artefacts,
         # but keep it deterministic so the same (text, seed) pair
         # always produces the same output.
-        chunk_seed = (seed + i) if seed is not None else None
+        chunk_seed = resolved_seed + i
 
-        chunk_audio, chunk_sr = await backend.generate(
+        chunk_audio, chunk_sr, seed_used, attempts = await _generate_one_chunk(
+            backend,
             chunk_text,
             voice_prompt,
             language,
             chunk_seed,
             instruct,
+            trim_fn,
+            verify_fn,
+            max_verify_attempts,
         )
-        if trim_fn is not None:
-            chunk_audio = trim_fn(chunk_audio, chunk_sr)
 
         audio_chunks.append(np.asarray(chunk_audio, dtype=np.float32))
+        chunk_seeds.append(seed_used)
+        if attempts is not None:
+            verify_report.append({"chunk": i, "attempts": attempts})
         if sample_rate is None:
             sample_rate = chunk_sr
 
     audio = concatenate_audio_chunks(audio_chunks, sample_rate, crossfade_ms=crossfade_ms)
-    return audio, sample_rate
+    return ChunkedTTSResult(
+        audio=audio,
+        sample_rate=sample_rate,
+        seed=resolved_seed,
+        chunk_seeds=chunk_seeds,
+        verify=verify_report if verify_report else None,
+    )

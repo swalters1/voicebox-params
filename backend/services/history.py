@@ -121,6 +121,7 @@ async def update_generation_status(
     audio_path: Optional[str] = None,
     duration: Optional[float] = None,
     error: Optional[str] = None,
+    seed: Optional[int] = None,
 ) -> Optional[GenerationResponse]:
     """Update the status of a generation (used by async generation flow)."""
     generation = db.query(DBGeneration).filter_by(id=generation_id).first()
@@ -134,6 +135,10 @@ async def update_generation_status(
         generation.duration = duration
     if error is not None:
         generation.error = error
+    if seed is not None:
+        # Persist the concrete seed actually used so an auto-seeded render can
+        # be replayed exactly later.
+        generation.seed = seed
 
     db.commit()
     db.refresh(generation)
