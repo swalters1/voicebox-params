@@ -43,6 +43,8 @@ async def run_generation(
     crossfade_ms: Optional[int] = None,
     version_id: Optional[str] = None,
     tts_params: Optional[dict] = None,
+    verify: bool = False,
+    max_verify_attempts: int = 3,
 ) -> None:
     """Execute TTS inference and persist the result.
 
@@ -86,6 +88,16 @@ async def run_generation(
             gen_kwargs["crossfade_ms"] = crossfade_ms
         if tts_params:
             gen_kwargs["gen_params"] = tts_params
+        if verify:
+            # Loop-back: transcribe each rendered chunk and re-seed on mismatch.
+            from . import transcribe as transcribe_svc
+            from ..utils.verify import make_chunk_verifier, VerifyConfig
+
+            stt_backend = transcribe_svc.get_whisper_model()
+            gen_kwargs["verify_fn"] = make_chunk_verifier(
+                stt_backend, VerifyConfig(language=language)
+            )
+            gen_kwargs["max_verify_attempts"] = max_verify_attempts
 
         result = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
         audio, sample_rate, resolved_seed = result.audio, result.sample_rate, result.seed

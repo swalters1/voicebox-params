@@ -140,6 +140,8 @@ async def generate_speech(
             max_chunk_chars=data.max_chunk_chars,
             crossfade_ms=data.crossfade_ms,
             tts_params=data.tts_params.to_overrides() if data.tts_params else None,
+            verify=data.verify,
+            max_verify_attempts=data.max_verify_attempts,
         )
     )
 
