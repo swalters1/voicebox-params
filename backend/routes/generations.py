@@ -21,6 +21,30 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+def _resolve_tts_options(engine: str, overrides: dict | None) -> dict | None:
+    """Resolve request overrides against the engine's PARAM_SPEC.
+
+    Returns the fully-resolved option set (or None when the engine declares no
+    tunable params). Unknown keys / out-of-range values become a 422.
+    """
+    from ..backends import get_param_spec
+    from ..backends.param_spec import resolve_options, OptionError
+
+    spec = get_param_spec(engine)
+    if not spec:
+        # Engine has no tunable params; a non-empty override is a client error.
+        if overrides:
+            raise HTTPException(
+                status_code=422,
+                detail=f"engine {engine!r} accepts no tts_params",
+            )
+        return None
+    try:
+        return resolve_options(spec, overrides or {})
+    except OptionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
 IMPORTED_AUDIO_PROFILE_NAME = "Imported Audio"
 IMPORT_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".webm"}
 IMPORT_AUDIO_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
@@ -73,6 +97,10 @@ async def generate_speech(
         profiles.validate_profile_engine(profile, engine)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Resolve/validate tuning options BEFORE creating the generation row, so a
+    # bad option 422s cleanly instead of orphaning a "generating" row.
+    resolved_options = _resolve_tts_options(engine, data.tts_params)
 
     model_size = (data.model_size or "1.7B") if engine_has_model_sizes(engine) else None
 
@@ -139,7 +167,7 @@ async def generate_speech(
             mode="generate",
             max_chunk_chars=data.max_chunk_chars,
             crossfade_ms=data.crossfade_ms,
-            tts_params=data.tts_params.to_overrides() if data.tts_params else None,
+            tts_params=resolved_options,
             verify=data.verify,
             max_verify_attempts=data.max_verify_attempts,
         )
@@ -335,6 +363,7 @@ async def stream_speech(
         profiles.validate_profile_engine(profile, engine)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    resolved_options = _resolve_tts_options(engine, data.tts_params)
     tts_model = get_tts_backend_for_engine(engine)
     model_size = data.model_size or "1.7B"
 
@@ -365,7 +394,7 @@ async def stream_speech(
         max_chunk_chars=data.max_chunk_chars,
         crossfade_ms=data.crossfade_ms,
         trim_fn=trim_fn,
-        gen_params=data.tts_params.to_overrides() if data.tts_params else None,
+        options=resolved_options,
     )
     audio, sample_rate = result.audio, result.sample_rate
 

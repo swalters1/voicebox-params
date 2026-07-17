@@ -87,7 +87,7 @@ async def run_generation(
         if crossfade_ms is not None:
             gen_kwargs["crossfade_ms"] = crossfade_ms
         if tts_params:
-            gen_kwargs["gen_params"] = tts_params
+            gen_kwargs["options"] = tts_params
         if verify:
             # Loop-back: transcribe each rendered chunk and re-seed on mismatch.
             from . import transcribe as transcribe_svc
@@ -102,20 +102,13 @@ async def run_generation(
         result = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
         audio, sample_rate, resolved_seed = result.audio, result.sample_rate, result.seed
 
-        # Assemble the reproducible record of what actually ran. Persist the
-        # FULLY-RESOLVED param set (defaults + overrides), not just the deltas,
-        # so the row alone reproduces the render (FORK_NOTES §7c).
-        if engine == "chatterbox_turbo":
-            from ..backends.chatterbox_turbo_backend import TURBO_DEFAULT_PARAMS
-
-            resolved_tts = {**TURBO_DEFAULT_PARAMS, **(tts_params or {})}
-        else:
-            resolved_tts = dict(tts_params or {})
-
+        # Assemble the reproducible record of what actually ran. ``tts_params``
+        # is already the FULLY-RESOLVED option set (the route resolved it
+        # against the engine's PARAM_SPEC), so the row alone reproduces the
+        # render (FORK_NOTES §7c).
         gen_params_record: dict = {
             "engine": engine,
-            "tts_params": resolved_tts,
-            "tts_overrides": tts_params or {},
+            "tts_params": tts_params or {},
             "chunk_seeds": result.chunk_seeds,
         }
         if result.verify is not None:

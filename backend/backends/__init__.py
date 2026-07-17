@@ -105,16 +105,17 @@ class TTSBackend(Protocol):
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
-        params: Optional[dict] = None,
+        options: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio from text.
 
         Args:
-            params: Optional engine-specific inference overrides. Backends that
-                don't support tuning may ignore it; callers should only pass it
-                to backends that declare a ``params`` parameter (see
-                ``generate_chunked``'s capability detection).
+            options: Optional resolved inference overrides (keys from the
+                backend's ``PARAM_SPEC``). Backends that declare no spec may
+                ignore it; callers should only pass it to backends that declare
+                an ``options`` parameter (see ``generate_chunked``'s capability
+                detection).
 
         Returns:
             Tuple of (audio_array, sample_rate)
@@ -726,6 +727,36 @@ def get_tts_backend_for_engine(engine: str) -> TTSBackend:
 
         _tts_backends[engine] = backend
         return backend
+
+
+def get_param_spec(engine: str) -> list:
+    """Return the engine's declarative PARAM_SPEC (empty if none / unavailable).
+
+    Backends without tunable knobs (or whose optional deps aren't installed in
+    this environment) yield ``[]`` rather than raising, so callers and the
+    ``GET /engines`` endpoint degrade gracefully.
+    """
+    try:
+        backend = get_tts_backend_for_engine(engine)
+    except Exception:
+        return []
+    return list(getattr(backend, "PARAM_SPEC", []) or [])
+
+
+def list_engine_specs() -> list[dict]:
+    """Capability list for ``GET /engines``: engine, display name, param spec."""
+    from .param_spec import spec_as_dicts
+
+    out = []
+    for engine, display in TTS_ENGINES.items():
+        out.append(
+            {
+                "engine": engine,
+                "display_name": display,
+                "param_spec": spec_as_dicts(get_param_spec(engine)),
+            }
+        )
+    return out
 
 
 def get_stt_backend() -> STTBackend:

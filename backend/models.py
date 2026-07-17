@@ -76,31 +76,6 @@ class ProfileSampleResponse(BaseModel):
         from_attributes = True
 
 
-class TurboParams(BaseModel):
-    """Chatterbox Turbo inference parameters.
-
-    All fields are optional; any left unset fall back to the engine defaults
-    (see ``TURBO_DEFAULT_PARAMS`` in the chatterbox_turbo backend). Ranges are
-    permissive on purpose — this is a power-user knob for the fork.
-
-    Unknown keys are rejected (422), not silently dropped: silently ignoring a
-    misapplied option (e.g. ``exaggeration`` on turbo, which turbo has no such
-    knob) is exactly how a typo looked like it "worked" for weeks. See
-    docs/FORK_NOTES.md §7e.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    temperature: Optional[float] = Field(None, ge=0.0, le=5.0)
-    top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
-    top_k: Optional[int] = Field(None, ge=0, le=100000)
-    repetition_penalty: Optional[float] = Field(None, ge=1.0, le=10.0)
-
-    def to_overrides(self) -> dict:
-        """Return only the explicitly-set fields as a plain dict."""
-        return self.model_dump(exclude_none=True)
-
-
 class WhisperOptions(BaseModel):
     """Whisper decode options for transcription.
 
@@ -147,9 +122,9 @@ class GenerationRequest(BaseModel):
     effects_chain: Optional[List["EffectConfig"]] = Field(
         None, description="Effects chain to apply after generation (overrides profile default)"
     )
-    tts_params: Optional[TurboParams] = Field(
+    tts_params: Optional[dict] = Field(
         None,
-        description="Engine inference parameter overrides (currently Chatterbox Turbo). Unset fields use engine defaults.",
+        description="Engine inference option overrides, validated per-engine against its PARAM_SPEC (see GET /engines). Unknown keys or out-of-range values are rejected (422).",
     )
     verify: bool = Field(
         default=False,
