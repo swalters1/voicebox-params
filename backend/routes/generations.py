@@ -37,7 +37,7 @@ def _resolve_tts_options(
     request overrides are strict: an unknown key or out-of-range value is a 422.
     """
     from ..backends import get_param_spec
-    from ..utils.param_spec import resolve_options, OptionError
+    from ..utils.param_spec import resolve_options, filter_applicable, OptionError
 
     spec = get_param_spec(engine)
     if not spec:
@@ -50,9 +50,11 @@ def _resolve_tts_options(
             )
         return None
     try:
-        # engine defaults + profile (lenient: ignore cross-engine keys)
-        base = resolve_options(spec, profile_overrides or {}, reject_unknown=False)
-        # + request (strict)
+        # engine defaults + profile — fully lenient: keys not in THIS engine's
+        # spec, or out of its range, are dropped (a per-voice tuning may target
+        # a different default engine, so it must never 422 an unrelated request).
+        base = resolve_options(spec, filter_applicable(spec, profile_overrides))
+        # + request (strict: unknown key / out-of-range -> 422)
         return resolve_options(spec, base, request_overrides or {})
     except OptionError as e:
         raise HTTPException(status_code=422, detail=str(e))

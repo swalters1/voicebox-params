@@ -92,6 +92,32 @@ def resolve_options(
     return out
 
 
+def filter_applicable(spec: Iterable[Param], overrides: Optional[dict]) -> dict:
+    """Keep only *overrides* that are valid for this spec (leniently).
+
+    Drops keys not in the spec AND keys whose value is out of range, without
+    raising. Used for the profile layer of option resolution: a per-voice tuning
+    may target a different default engine, so keys that don't apply (or don't
+    fit) to the engine actually in use are silently ignored rather than failing
+    a request the caller never mis-parameterized.
+    """
+    allowed = {p.name: p for p in spec}
+    out = {}
+    for key, value in (overrides or {}).items():
+        param = allowed.get(key)
+        if param is None:
+            continue
+        if (
+            value is not None
+            and param.min is not None
+            and param.max is not None
+            and not (param.min <= value <= param.max)
+        ):
+            continue
+        out[key] = value
+    return out
+
+
 def split_call_options(spec: Iterable[Param], resolved: dict) -> dict:
     """Return only the ``stage=="call"`` entries of a resolved option set.
 
