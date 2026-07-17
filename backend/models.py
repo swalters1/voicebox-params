@@ -26,6 +26,10 @@ class VoiceProfileCreate(BaseModel):
     design_prompt: Optional[str] = Field(None, max_length=2000)
     default_engine: Optional[str] = Field(None, max_length=50)
     personality: Optional[str] = Field(None, max_length=2000)
+    option_overrides: Optional[dict] = Field(
+        None,
+        description="Per-voice inference option overrides, validated against the default_engine's PARAM_SPEC. The resolution layer between engine defaults and per-request tts_params.",
+    )
 
 
 class VoiceProfileResponse(BaseModel):
@@ -43,6 +47,7 @@ class VoiceProfileResponse(BaseModel):
     design_prompt: Optional[str] = None
     default_engine: Optional[str] = None
     personality: Optional[str] = None
+    option_overrides: Optional[dict] = None
     generation_count: int = 0
     sample_count: int = 0
     created_at: datetime

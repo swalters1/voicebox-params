@@ -22,26 +22,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _resolve_tts_options(engine: str, overrides: dict | None) -> dict | None:
-    """Resolve request overrides against the engine's PARAM_SPEC.
+def _resolve_tts_options(
+    engine: str,
+    profile_overrides: dict | None,
+    request_overrides: dict | None,
+) -> dict | None:
+    """Resolve options for an engine, layering profile then request overrides.
 
-    Returns the fully-resolved option set (or None when the engine declares no
-    tunable params). Unknown keys / out-of-range values become a 422.
+    Resolution order (last wins, FORK_NOTES §7b):
+        engine PARAM_SPEC defaults -> profile.option_overrides -> request.tts_params
+
+    Profile overrides are applied leniently (keys not in this engine's spec are
+    ignored — a per-voice tuning may target a different default engine), while
+    request overrides are strict: an unknown key or out-of-range value is a 422.
     """
     from ..backends import get_param_spec
     from ..utils.param_spec import resolve_options, OptionError
 
     spec = get_param_spec(engine)
     if not spec:
-        # Engine has no tunable params; a non-empty override is a client error.
-        if overrides:
+        # Engine has no tunable params; a non-empty request override is a client
+        # error. Profile overrides for a mismatched engine are ignored.
+        if request_overrides:
             raise HTTPException(
                 status_code=422,
                 detail=f"engine {engine!r} accepts no tts_params",
             )
         return None
     try:
-        return resolve_options(spec, overrides or {})
+        # engine defaults + profile (lenient: ignore cross-engine keys)
+        base = resolve_options(spec, profile_overrides or {}, reject_unknown=False)
+        # + request (strict)
+        return resolve_options(spec, base, request_overrides or {})
     except OptionError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -126,7 +138,9 @@ async def generate_speech(
 
     # Resolve/validate tuning options BEFORE creating the generation row, so a
     # bad option 422s cleanly instead of orphaning a "generating" row.
-    resolved_options = _resolve_tts_options(engine, data.tts_params)
+    resolved_options = _resolve_tts_options(
+        engine, getattr(profile, "option_overrides", None), data.tts_params
+    )
     resolved_verify = _resolve_verify_options(data.verify_config)
 
     model_size = (data.model_size or "1.7B") if engine_has_model_sizes(engine) else None
@@ -391,7 +405,9 @@ async def stream_speech(
         profiles.validate_profile_engine(profile, engine)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    resolved_options = _resolve_tts_options(engine, data.tts_params)
+    resolved_options = _resolve_tts_options(
+        engine, getattr(profile, "option_overrides", None), data.tts_params
+    )
     tts_model = get_tts_backend_for_engine(engine)
     model_size = data.model_size or "1.7B"
 
