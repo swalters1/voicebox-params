@@ -314,7 +314,7 @@ class PyTorchSTTBackend:
 
             logger.info("Whisper model unloaded")
 
-    # Maps WhisperOptions field names to the kwargs HuggingFace's
+    # Maps WHISPER_PARAM_SPEC option names to the kwargs HuggingFace's
     # WhisperForConditionalGeneration.generate expects. Names that differ from
     # the openai-whisper convention are translated here.
     _HF_OPTION_MAP: ClassVar[dict] = {
@@ -339,7 +339,7 @@ class PyTorchSTTBackend:
             audio_path: Path to audio file
             language: Optional language hint
             model_size: Optional model size override
-            options: Optional Whisper decode overrides (WhisperOptions naming).
+            options: Optional Whisper decode overrides (WHISPER_PARAM_SPEC naming).
                 Mapped to HuggingFace generate kwargs; if the installed
                 transformers version rejects them, transcription retries
                 without so a bad option never fails the request.
@@ -376,7 +376,7 @@ class PyTorchSTTBackend:
                 )
                 generate_kwargs["forced_decoder_ids"] = forced_decoder_ids
 
-            # Translate WhisperOptions -> HF generate kwargs (only known keys).
+            # Translate WHISPER_PARAM_SPEC names -> HF generate kwargs (known keys only).
             extra_kwargs = {}
             if options:
                 extra_kwargs = {
@@ -392,15 +392,21 @@ class PyTorchSTTBackend:
                         **generate_kwargs,
                         **extra_kwargs,
                     )
-                except (TypeError, ValueError) as e:
-                    # HF honors several of these kwargs only in the long-form/
-                    # timestamped path and raises ValueError (not just TypeError)
-                    # on short clips — so a bad/unsupported option never fails
-                    # the request, it just falls back to defaults.
+                except Exception as e:
+                    # Decode options are strictly BEST-EFFORT. HF honors several
+                    # of these only in the long-form/timestamped path, and on
+                    # short clips that path can raise not just TypeError/
+                    # ValueError but internal errors like UnboundLocalError
+                    # ('logprobs' referenced before assignment) — see
+                    # FORK_NOTES §5. So ANY failure while applying options falls
+                    # back to plain default decoding rather than failing the
+                    # request. A genuine (options-free) generate error still
+                    # propagates from the retry below.
                     if not extra_kwargs:
                         raise
                     logger.warning(
-                        "Whisper decode options rejected (%s); retrying with defaults",
+                        "Whisper decode options failed (%s: %s); retrying with defaults",
+                        type(e).__name__,
                         e,
                     )
                     predicted_ids = self.model.generate(

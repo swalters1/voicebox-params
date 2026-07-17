@@ -353,7 +353,7 @@ class MLXSTTBackend:
                 decode_options["language"] = language
             if options:
                 # mlx-whisper follows the openai-whisper option names, so the
-                # WhisperOptions fields pass through unchanged.
+                # openai-whisper option names pass through unchanged.
                 decode_options.update(options)
 
             # Inference runs with the process's default HF_HUB_OFFLINE
@@ -361,9 +361,15 @@ class MLXSTTBackend:
             # regression this revert fixes (issue #462).
             try:
                 result = self.model.generate(str(audio_path), **decode_options)
-            except (TypeError, ValueError) as e:
+            except Exception as e:
+                # Decode options are best-effort — any failure falls back to
+                # default decoding rather than failing the request (see the
+                # PyTorch backend for the HF short-clip failure modes).
+                if not options:
+                    raise
                 logger.warning(
-                    "Whisper decode options rejected (%s); retrying with defaults",
+                    "Whisper decode options failed (%s: %s); retrying with defaults",
+                    type(e).__name__,
                     e,
                 )
                 base = {"language": language} if language else {}

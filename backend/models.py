@@ -2,7 +2,7 @@
 Pydantic models for request/response validation.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -79,28 +79,6 @@ class ProfileSampleResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class WhisperOptions(BaseModel):
-    """Whisper decode options for transcription.
-
-    These are the knobs that address the "short text" hallucination problem
-    (``no_speech_threshold``, ``condition_on_previous_text``, the temperature
-    fallback list, etc.). All optional; unset fields use the backend defaults.
-    Unknown keys are rejected (422), not silently dropped.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    temperature: Optional[float] = Field(None, ge=0.0, le=1.0)
-    no_speech_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
-    logprob_threshold: Optional[float] = Field(None, ge=-20.0, le=0.0)
-    compression_ratio_threshold: Optional[float] = Field(None, ge=0.0, le=100.0)
-    condition_on_previous_text: Optional[bool] = None
-
-    def to_overrides(self) -> dict:
-        """Return only the explicitly-set fields as a plain dict."""
-        return self.model_dump(exclude_none=True)
 
 
 class GenerationRequest(BaseModel):
@@ -217,8 +195,8 @@ class TranscriptionRequest(BaseModel):
     language: Optional[str] = Field(None, pattern="^(en|zh|ja|ko|de|fr|ru|pt|es|it)$")
     model: Optional[str] = Field(None, pattern="^(base|small|medium|large|turbo)$")
     # Note: the /transcribe route is multipart/form-data and parses an `options`
-    # JSON string field into WhisperOptions directly (see routes/transcription.py),
-    # so this request model intentionally does not carry an options field.
+    # JSON string field, validated against WHISPER_PARAM_SPEC (see
+    # routes/transcription.py), so this request model carries no options field.
 
 
 class TranscriptionResponse(BaseModel):
@@ -226,6 +204,8 @@ class TranscriptionResponse(BaseModel):
 
     text: str
     duration: float
+    # Echo of the resolved decode overrides that were applied (FORK_NOTES §7f).
+    options: Optional[dict] = None
 
 
 class RefinementFlagsModel(BaseModel):

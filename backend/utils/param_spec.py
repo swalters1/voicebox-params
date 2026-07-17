@@ -92,6 +92,39 @@ def resolve_options(
     return out
 
 
+def validate_options(
+    spec: Iterable[Param],
+    overrides: Optional[dict],
+    *,
+    reject_unknown: bool = True,
+) -> dict:
+    """Validate overrides against a spec and return ONLY the provided keys.
+
+    Unlike :func:`resolve_options`, this does NOT fill defaults. Use it for
+    engines whose own defaults should stand unless the caller explicitly
+    overrides a value (e.g. Whisper decode options) — forcing spec defaults on
+    every call would change behavior and could trip the engine's own fallback.
+    Raises :class:`OptionError` on an unknown key or out-of-range value.
+    """
+    allowed = {p.name: p for p in spec}
+    out = {}
+    for key, value in (overrides or {}).items():
+        param = allowed.get(key)
+        if param is None:
+            if reject_unknown:
+                raise OptionError(f"unknown option {key!r}; valid: {sorted(allowed)}")
+            continue
+        if (
+            value is not None
+            and param.min is not None
+            and param.max is not None
+            and not (param.min <= value <= param.max)
+        ):
+            raise OptionError(f"{key}={value} out of range [{param.min}, {param.max}]")
+        out[key] = value
+    return out
+
+
 def filter_applicable(spec: Iterable[Param], overrides: Optional[dict]) -> dict:
     """Keep only *overrides* that are valid for this spec (leniently).
 
