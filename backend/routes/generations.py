@@ -220,7 +220,6 @@ async def generate_speech(
             crossfade_ms=data.crossfade_ms,
             tts_params=resolved_options,
             verify=data.verify,
-            max_verify_attempts=data.max_verify_attempts,
             verify_config=resolved_verify,
         )
     )

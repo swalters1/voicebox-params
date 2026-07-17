@@ -89,23 +89,50 @@ class VerifyConfig:
 # audiobook pipeline can sweep them. ``language`` is derived from the generation,
 # so it is not part of this spec.
 VERIFY_PARAM_SPEC = [
+    # --- gate thresholds (how a render is judged) ---
     Param("coverage_min", 0.80, 0.0, 1.0, desc="Min fraction of expected words (excl. leading token) found"),
     Param("duration_ratio_min", 0.55, 0.0, 2.0, desc="Min actual/expected audio duration (truncation floor)"),
-    Param("chars_per_second", 16.0, 1.0, 60.0, desc="Speaker pace used to predict duration (measured ~15-17)"),
+    Param("chars_per_second", 16.0, 1.0, 60.0, desc="Speaker pace used to predict duration (measure per-voice)"),
     Param("min_words_for_check", 3, 0, 100, desc="Expected chunks shorter than this accepted unchecked"),
     Param("ignore_leading_words", 1, 0, 10, desc="Leading expected words dropped before coverage (ASR artifact)"),
     Param("model_size", "base", desc="Whisper model used for verification"),
+    # --- escalation strategy (what to do on failure — FORK_NOTES §9) ---
+    Param("max_attempts", 10, 1, 24, desc="Seed-retry budget per escalation stage"),
+    Param("retry_temperature", 0.0, 0.0, 2.0, desc="Stage-2 lowered temperature (0 = off; unproven)"),
+    Param("split_enabled", True, desc="Stage 3: split a failing unit at a boundary and recurse"),
+    Param("split_min_chars", 120, 40, 260, desc="Split target size — cross into the safe zone"),
+    Param("join_silence_ms", 250, 0, 2000, desc="Sized pause at split joins (not a crossfade)"),
 ]
+
+# Which resolved keys feed the gate (VerifyConfig) vs the escalation strategy.
+_GATE_KEYS = {
+    "coverage_min", "duration_ratio_min", "chars_per_second",
+    "min_words_for_check", "ignore_leading_words", "model_size",
+}
+_ESCALATION_KEYS = {
+    "max_attempts", "retry_temperature", "split_enabled", "split_min_chars", "join_silence_ms",
+}
 
 
 def build_verify_config(options: Optional[dict], language: Optional[str]) -> VerifyConfig:
-    """Build a VerifyConfig from resolved gate options + the generation language.
+    """Build the gate VerifyConfig from resolved options + the generation language.
 
     Fills defaults from VERIFY_PARAM_SPEC defensively (unknown keys ignored —
-    validation already happened at the request boundary).
+    validation already happened at the request boundary). Only gate keys are
+    used; escalation keys go to :func:`build_escalation_config`.
     """
     resolved = resolve_options(VERIFY_PARAM_SPEC, options or {}, reject_unknown=False)
-    return VerifyConfig(language=language, **resolved)
+    gate = {k: v for k, v in resolved.items() if k in _GATE_KEYS}
+    return VerifyConfig(language=language, **gate)
+
+
+def build_escalation_config(options: Optional[dict]):
+    """Build the EscalationConfig (loop strategy) from resolved verify options."""
+    from .chunked_tts import EscalationConfig
+
+    resolved = resolve_options(VERIFY_PARAM_SPEC, options or {}, reject_unknown=False)
+    esc = {k: v for k, v in resolved.items() if k in _ESCALATION_KEYS}
+    return EscalationConfig(**esc)
 
 
 def evaluate(

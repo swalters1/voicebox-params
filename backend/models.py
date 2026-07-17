@@ -111,10 +111,7 @@ class GenerationRequest(BaseModel):
     )
     verify: bool = Field(
         default=False,
-        description="Transcribe each rendered chunk and re-seed on mismatch (verify loop).",
-    )
-    max_verify_attempts: int = Field(
-        default=3, ge=1, le=10, description="Max re-seed attempts per chunk when verify is enabled."
+        description="Transcribe each rendered chunk and escalate on mismatch (seed-retry -> temp -> split).",
     )
     verify_config: Optional[dict] = Field(
         None,
