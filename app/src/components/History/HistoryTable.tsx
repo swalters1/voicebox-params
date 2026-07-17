@@ -541,6 +541,22 @@ export function HistoryTable() {
                             {formatDuration(gen.duration ?? 0)}
                           </span>
                         ) : null}
+                        {gen.gen_params?.verified === true && (
+                          <span
+                            className="text-xs text-emerald-500"
+                            title="Verify loop: all chunks passed"
+                          >
+                            ✓ verified
+                          </span>
+                        )}
+                        {gen.gen_params?.verified === false && (
+                          <span
+                            className="text-xs text-amber-500"
+                            title="Verify loop: one or more chunks failed verification"
+                          >
+                            ⚠ unverified
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-muted-foreground">
                         {isInProgress ? (

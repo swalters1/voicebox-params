@@ -86,6 +86,54 @@ export interface GenerationRequest {
   crossfade_ms?: number;
   normalize?: boolean;
   effects_chain?: EffectConfig[];
+  /** Per-engine inference option overrides, validated against the engine's PARAM_SPEC (GET /engines). */
+  tts_params?: Record<string, number>;
+  /** Transcribe each rendered chunk and escalate (seed-retry → temp → split) on mismatch. */
+  verify?: boolean;
+  /** Verify-gate + escalation overrides, validated against VERIFY_PARAM_SPEC (GET /verify/params). */
+  verify_config?: Record<string, number | boolean | string>;
+}
+
+/** One entry of a declarative param spec (GET /engines, /verify/params, /transcribe/params). */
+export interface ParamSpec {
+  name: string;
+  default: number | boolean | string;
+  min?: number | null;
+  max?: number | null;
+  stage?: string;
+  desc?: string;
+}
+
+export interface EngineSpec {
+  engine: string;
+  display_name: string;
+  param_spec: ParamSpec[];
+}
+
+export interface EnginesResponse {
+  engines: EngineSpec[];
+}
+
+export interface ParamSpecResponse {
+  param_spec: ParamSpec[];
+}
+
+/** Effective render record persisted on a generation (resolved params + verify report). */
+export interface GenParams {
+  engine?: string;
+  tts_params?: Record<string, number>;
+  chunk_seeds?: number[];
+  /** True/false once a verifier ran (all chunks passed); absent/null otherwise. */
+  verified?: boolean | null;
+  verify_config?: Record<string, number | boolean | string>;
+  verify?: Array<{
+    chunk: number;
+    verified?: boolean | null;
+    stage?: string;
+    seed?: number;
+    attempts?: Array<Record<string, unknown>>;
+    splits?: Array<Record<string, unknown>> | null;
+  }>;
 }
 
 export interface GenerationVersionResponse {
@@ -113,6 +161,7 @@ export interface GenerationResponse {
   status: 'loading_model' | 'generating' | 'completed' | 'failed';
   error?: string;
   is_favorited?: boolean;
+  gen_params?: GenParams | null;
   created_at: string;
   versions?: GenerationVersionResponse[];
   active_version_id?: string;

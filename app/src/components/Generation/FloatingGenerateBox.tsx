@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMatchRoute } from '@tanstack/react-router';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Dices, Loader2, SlidersHorizontal, Sparkles, Wand2 } from 'lucide-react';
+import { Dices, Loader2, Settings2, SlidersHorizontal, Sparkles, Wand2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils/cn';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useStoryStore } from '@/stores/storyStore';
 import { useUIStore } from '@/stores/uiStore';
+import { AdvancedGeneratePanel } from './AdvancedGeneratePanel';
 import { EngineModelSelector } from './EngineModelSelector';
 import { ParalinguisticInput } from './ParalinguisticInput';
 
@@ -44,6 +45,7 @@ export function FloatingGenerateBox({
   const { data: profiles } = useProfiles();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isInstructExpanded, setIsInstructExpanded] = useState(false);
+  const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -476,6 +478,28 @@ export function FloatingGenerateBox({
 
                 <div className="group relative">
                   <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setIsAdvancedExpanded((v) => !v)}
+                    className={cn(
+                      'h-10 w-10 rounded-full transition-all duration-200',
+                      isAdvancedExpanded || form.watch('verify')
+                        ? 'bg-accent text-accent-foreground border border-accent hover:bg-accent/90'
+                        : 'bg-card border border-border hover:bg-background/50',
+                    )}
+                    aria-label="Advanced options"
+                    aria-pressed={isAdvancedExpanded}
+                  >
+                    <Settings2 className="h-4 w-4" />
+                  </Button>
+                  <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap rounded-md bg-popover px-3 py-1.5 text-xs text-popover-foreground border border-border opacity-0 transition-opacity group-hover:opacity-100 z-[9999]">
+                    Advanced options &amp; verify
+                  </span>
+                </div>
+
+                <div className="group relative">
+                  <Button
                     type="submit"
                     disabled={isPending || !selectedProfileId}
                     className="h-10 w-10 rounded-full bg-accent hover:bg-accent/90 hover:scale-105 text-accent-foreground shadow-lg hover:shadow-accent/50 transition-all duration-200"
@@ -630,6 +654,21 @@ export function FloatingGenerateBox({
                   </FormItem>
                 </div>
               </motion.div>
+            </AnimatePresence>
+
+            {/* Advanced mode — engine params + verify loop, built from capability endpoints */}
+            <AnimatePresence>
+              {isAdvancedExpanded && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  className="overflow-hidden"
+                >
+                  <AdvancedGeneratePanel form={form} engine={form.watch('engine') || 'qwen'} />
+                </motion.div>
+              )}
             </AnimatePresence>
           </form>
         </Form>
