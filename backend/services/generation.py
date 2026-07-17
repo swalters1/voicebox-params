@@ -45,6 +45,7 @@ async def run_generation(
     tts_params: Optional[dict] = None,
     verify: bool = False,
     max_verify_attempts: int = 3,
+    verify_config: Optional[dict] = None,
 ) -> None:
     """Execute TTS inference and persist the result.
 
@@ -88,16 +89,23 @@ async def run_generation(
             gen_kwargs["crossfade_ms"] = crossfade_ms
         if tts_params:
             gen_kwargs["options"] = tts_params
+        effective_verify_cfg: Optional[dict] = None
         if verify:
             # Loop-back: transcribe each rendered chunk and re-seed on mismatch.
             from . import transcribe as transcribe_svc
-            from ..utils.verify import make_chunk_verifier, VerifyConfig
+            from ..utils.verify import make_chunk_verifier, build_verify_config
 
+            vcfg = build_verify_config(verify_config, language)
             stt_backend = transcribe_svc.get_whisper_model()
-            gen_kwargs["verify_fn"] = make_chunk_verifier(
-                stt_backend, VerifyConfig(language=language)
-            )
+            gen_kwargs["verify_fn"] = make_chunk_verifier(stt_backend, vcfg)
             gen_kwargs["max_verify_attempts"] = max_verify_attempts
+            # Record the effective gate config (minus derived language) so the
+            # row shows exactly which thresholds judged this render.
+            from dataclasses import asdict
+
+            effective_verify_cfg = {
+                k: v for k, v in asdict(vcfg).items() if k != "language"
+            }
 
         result = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
         audio, sample_rate, resolved_seed = result.audio, result.sample_rate, result.seed
@@ -113,6 +121,8 @@ async def run_generation(
         }
         if result.verify is not None:
             gen_params_record["verify"] = result.verify
+        if effective_verify_cfg is not None:
+            gen_params_record["verify_config"] = effective_verify_cfg
 
         # --- Normalize (generate and regenerate always; retry skips) -----
         if normalize or mode == "regenerate":

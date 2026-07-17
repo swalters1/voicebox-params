@@ -29,7 +29,7 @@ def _resolve_tts_options(engine: str, overrides: dict | None) -> dict | None:
     tunable params). Unknown keys / out-of-range values become a 422.
     """
     from ..backends import get_param_spec
-    from ..backends.param_spec import resolve_options, OptionError
+    from ..utils.param_spec import resolve_options, OptionError
 
     spec = get_param_spec(engine)
     if not spec:
@@ -42,6 +42,19 @@ def _resolve_tts_options(engine: str, overrides: dict | None) -> dict | None:
         return None
     try:
         return resolve_options(spec, overrides or {})
+    except OptionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _resolve_verify_options(overrides: dict | None) -> dict | None:
+    """Resolve verify-gate overrides against VERIFY_PARAM_SPEC (422 on bad)."""
+    if not overrides:
+        return None
+    from ..utils.param_spec import resolve_options, OptionError
+    from ..utils.verify import VERIFY_PARAM_SPEC
+
+    try:
+        return resolve_options(VERIFY_PARAM_SPEC, overrides)
     except OptionError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -77,6 +90,19 @@ def _resolve_generation_engine(data: models.GenerationRequest, profile) -> str:
     return data.engine or getattr(profile, "default_engine", None) or getattr(profile, "preset_engine", None) or "qwen"
 
 
+@router.get("/verify/params")
+async def verify_params():
+    """Advertise the verify-gate tuning surface for the advanced-mode UI.
+
+    Mirrors GET /engines but for the loop-back verifier (FORK_NOTES §7f). Send
+    the chosen values as ``verify_config`` on /generate with ``verify: true``.
+    """
+    from ..utils.param_spec import spec_as_dicts
+    from ..utils.verify import VERIFY_PARAM_SPEC
+
+    return {"param_spec": spec_as_dicts(VERIFY_PARAM_SPEC)}
+
+
 @router.post("/generate", response_model=models.GenerationResponse)
 async def generate_speech(
     data: models.GenerationRequest,
@@ -101,6 +127,7 @@ async def generate_speech(
     # Resolve/validate tuning options BEFORE creating the generation row, so a
     # bad option 422s cleanly instead of orphaning a "generating" row.
     resolved_options = _resolve_tts_options(engine, data.tts_params)
+    resolved_verify = _resolve_verify_options(data.verify_config)
 
     model_size = (data.model_size or "1.7B") if engine_has_model_sizes(engine) else None
 
@@ -170,6 +197,7 @@ async def generate_speech(
             tts_params=resolved_options,
             verify=data.verify,
             max_verify_attempts=data.max_verify_attempts,
+            verify_config=resolved_verify,
         )
     )
 

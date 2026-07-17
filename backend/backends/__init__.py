@@ -745,7 +745,7 @@ def get_param_spec(engine: str) -> list:
 
 def list_engine_specs() -> list[dict]:
     """Capability list for ``GET /engines``: engine, display name, param spec."""
-    from .param_spec import spec_as_dicts
+    from ..utils.param_spec import spec_as_dicts
 
     out = []
     for engine, display in TTS_ENGINES.items():

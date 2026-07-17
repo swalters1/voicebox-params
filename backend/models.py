@@ -133,6 +133,10 @@ class GenerationRequest(BaseModel):
     max_verify_attempts: int = Field(
         default=3, ge=1, le=10, description="Max re-seed attempts per chunk when verify is enabled."
     )
+    verify_config: Optional[dict] = Field(
+        None,
+        description="Verify-gate tuning overrides, validated against VERIFY_PARAM_SPEC (see GET /verify/params). Unknown/out-of-range keys are rejected (422).",
+    )
 
 
 class GenerationResponse(BaseModel):

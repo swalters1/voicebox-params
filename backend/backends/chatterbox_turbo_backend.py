@@ -27,7 +27,7 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-from .param_spec import Param, resolve_options, split_call_options
+from ..utils.param_spec import Param, resolve_options, split_call_options
 
 CHATTERBOX_TURBO_HF_REPO = "ResembleAI/chatterbox-turbo"
 

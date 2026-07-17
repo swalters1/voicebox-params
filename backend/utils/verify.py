@@ -35,6 +35,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from .param_spec import Param, resolve_options
+
 logger = logging.getLogger("voicebox.verify")
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
@@ -78,6 +80,32 @@ class VerifyConfig:
     ignore_leading_words: int = 1
     # TODO(fork): replace chars_per_second with a per-profile pace measured from
     # the reference audio or prior blessed renders — global cps is a rough stand-in.
+
+
+# Declarative tuning surface for the verify gate, mirroring the engine PARAM_SPEC
+# contract (FORK_NOTES §7). These are STRUCTURAL defaults, not tuned constants —
+# §4 is emphatic they need a rate measured over many seeds × texts per length
+# bucket. Exposed per-request and advertised via GET /verify/params so the
+# audiobook pipeline can sweep them. ``language`` is derived from the generation,
+# so it is not part of this spec.
+VERIFY_PARAM_SPEC = [
+    Param("coverage_min", 0.80, 0.0, 1.0, desc="Min fraction of expected words (excl. leading token) found"),
+    Param("duration_ratio_min", 0.55, 0.0, 2.0, desc="Min actual/expected audio duration (truncation floor)"),
+    Param("chars_per_second", 16.0, 1.0, 60.0, desc="Speaker pace used to predict duration (measured ~15-17)"),
+    Param("min_words_for_check", 3, 0, 100, desc="Expected chunks shorter than this accepted unchecked"),
+    Param("ignore_leading_words", 1, 0, 10, desc="Leading expected words dropped before coverage (ASR artifact)"),
+    Param("model_size", "base", desc="Whisper model used for verification"),
+]
+
+
+def build_verify_config(options: Optional[dict], language: Optional[str]) -> VerifyConfig:
+    """Build a VerifyConfig from resolved gate options + the generation language.
+
+    Fills defaults from VERIFY_PARAM_SPEC defensively (unknown keys ignored —
+    validation already happened at the request boundary).
+    """
+    resolved = resolve_options(VERIFY_PARAM_SPEC, options or {}, reject_unknown=False)
+    return VerifyConfig(language=language, **resolved)
 
 
 def evaluate(
