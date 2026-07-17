@@ -2,7 +2,7 @@
 Pydantic models for request/response validation.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -82,7 +82,14 @@ class TurboParams(BaseModel):
     All fields are optional; any left unset fall back to the engine defaults
     (see ``TURBO_DEFAULT_PARAMS`` in the chatterbox_turbo backend). Ranges are
     permissive on purpose — this is a power-user knob for the fork.
+
+    Unknown keys are rejected (422), not silently dropped: silently ignoring a
+    misapplied option (e.g. ``exaggeration`` on turbo, which turbo has no such
+    knob) is exactly how a typo looked like it "worked" for weeks. See
+    docs/FORK_NOTES.md §7e.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     temperature: Optional[float] = Field(None, ge=0.0, le=5.0)
     top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
@@ -100,7 +107,10 @@ class WhisperOptions(BaseModel):
     These are the knobs that address the "short text" hallucination problem
     (``no_speech_threshold``, ``condition_on_previous_text``, the temperature
     fallback list, etc.). All optional; unset fields use the backend defaults.
+    Unknown keys are rejected (422), not silently dropped.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     temperature: Optional[float] = Field(None, ge=0.0, le=1.0)
     no_speech_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
@@ -222,9 +232,9 @@ class TranscriptionRequest(BaseModel):
 
     language: Optional[str] = Field(None, pattern="^(en|zh|ja|ko|de|fr|ru|pt|es|it)$")
     model: Optional[str] = Field(None, pattern="^(base|small|medium|large|turbo)$")
-    options: Optional[WhisperOptions] = Field(
-        None, description="Whisper decode option overrides (e.g. no_speech_threshold)."
-    )
+    # Note: the /transcribe route is multipart/form-data and parses an `options`
+    # JSON string field into WhisperOptions directly (see routes/transcription.py),
+    # so this request model intentionally does not carry an options field.
 
 
 class TranscriptionResponse(BaseModel):

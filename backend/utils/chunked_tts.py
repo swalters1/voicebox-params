@@ -25,6 +25,12 @@ logger = logging.getLogger("voicebox.chunked-tts")
 # column regardless of platform.
 _MAX_SEED = 2**31 - 1
 
+# Stride between a chunk's verify-retry seeds. A large prime keeps a chunk's
+# retry seeds clear of neighbouring chunks' base seeds (which are base+i), while
+# staying a deterministic function of the starting seed — so the entire retry
+# sequence replays from one integer (FORK_NOTES §2).
+_RETRY_STRIDE = 1_000_003
+
 
 def resolve_seed(seed: int | None) -> int:
     """Return *seed* if given, otherwise a fresh random seed.
@@ -268,6 +274,7 @@ async def _generate_one_chunk(
     the pipeline degrades gracefully rather than dropping a chunk.
     """
     attempts: list = []
+    base_seed = seed
     current_seed = seed
     audio: np.ndarray | None = None
     sample_rate = 0
@@ -304,8 +311,9 @@ async def _generate_one_chunk(
             total_tries,
             detail,
         )
-        # Re-seed with a fresh random value for the next attempt.
-        current_seed = random.randint(0, _MAX_SEED)
+        # Deterministic re-seed walk so the whole retry sequence replays from
+        # the starting seed (FORK_NOTES §2). Modulo keeps it in the int32 range.
+        current_seed = (base_seed + (attempt + 1) * _RETRY_STRIDE) % _MAX_SEED
 
     return audio, sample_rate, attempts[-1]["seed"], attempts
 

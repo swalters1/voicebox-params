@@ -361,7 +361,7 @@ class MLXSTTBackend:
             # regression this revert fixes (issue #462).
             try:
                 result = self.model.generate(str(audio_path), **decode_options)
-            except TypeError as e:
+            except (TypeError, ValueError) as e:
                 logger.warning(
                     "Whisper decode options rejected (%s); retrying with defaults",
                     e,

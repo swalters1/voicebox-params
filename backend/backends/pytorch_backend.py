@@ -392,7 +392,11 @@ class PyTorchSTTBackend:
                         **generate_kwargs,
                         **extra_kwargs,
                     )
-                except TypeError as e:
+                except (TypeError, ValueError) as e:
+                    # HF honors several of these kwargs only in the long-form/
+                    # timestamped path and raises ValueError (not just TypeError)
+                    # on short clips — so a bad/unsupported option never fails
+                    # the request, it just falls back to defaults.
                     if not extra_kwargs:
                         raise
                     logger.warning(

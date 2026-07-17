@@ -1,15 +1,26 @@
 """Loop-back verification of rendered TTS audio.
 
 Transcribes each rendered chunk with Whisper and compares the transcript to
-the intended text, so gross render failures (dropped clauses, truncation, or
-hallucinated noise) can be detected and re-seeded. Plugs into
-``generate_chunked`` as its ``verify_fn`` hook.
+the intended text, so a truncated render (EOS sampled early → words missing at
+the END) can be detected and re-seeded. Plugs into ``generate_chunked`` as its
+``verify_fn`` hook.
 
-The comparison is deliberately tolerant: ASR is not ground truth (it drops
-filler words, mangles proper nouns, and expands numbers), so an exact word
-count would false-fail on good audio. Instead it combines a normalized fuzzy
-similarity with a word-count ratio to catch the *gross* failures that actually
-matter, not benign drift.
+Gate design is driven by hard-won findings (see docs/FORK_NOTES.md §5):
+
+* Stock Voicebox transcription is bare HF ``WhisperForConditionalGeneration``
+  with greedy decode over a clip padded to 30s of mel. On SHORT clips it drops
+  the **leading** word from the transcript even though the audio contains it.
+  So the gate MUST NOT depend on the first token, and MUST NOT require an exact
+  transcript match (Whisper also normalizes numbers, homophones, and mangles
+  invented names).
+* The real failure mode is **truncation** — words missing at the end — best
+  seen as a **duration shortfall** against the speaker's pace. That is the
+  primary signal here; word-coverage (excluding the leading token) is the
+  secondary one.
+
+Thresholds are deliberately conservative STRUCTURAL defaults, not tuned
+constants — per FORK_NOTES §4 they need a rate measured over many seeds × texts
+per length bucket before any value is trusted. Tune via VerifyConfig.
 """
 
 from __future__ import annotations
@@ -28,13 +39,6 @@ logger = logging.getLogger("voicebox.verify")
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
-# Whisper decode options tuned to avoid the short-text hallucination problem
-# when transcribing our own (often short) chunk output for verification.
-_VERIFY_WHISPER_OPTIONS = {
-    "condition_on_previous_text": False,
-    "no_speech_threshold": 0.3,
-}
-
 
 def _normalize(text: str) -> list[str]:
     """Lowercase and tokenize to comparable word units (drops punctuation)."""
@@ -46,46 +50,80 @@ class VerifyConfig:
     """Thresholds and STT settings for chunk verification.
 
     Attributes:
-        similarity_threshold: Minimum normalized fuzzy similarity (0..1).
-        word_ratio_min: Minimum transcript/expected word-count ratio. Catches
-            gross dropouts and truncation where a whole clause vanishes.
-        model_size: Whisper model used for verification (small = fast).
-        language: Optional language hint for transcription.
+        coverage_min: Minimum fraction of expected words (excluding the leading
+            token) that must appear, in order, in the transcript. Catches
+            content dropped mid/late.
+        duration_ratio_min: Minimum ratio of actual audio duration to the
+            duration expected from the text at ``chars_per_second``. The
+            primary truncation signal — a clip that stops short trips this.
+        chars_per_second: Speaker pace estimate used to predict duration.
+            FORK_NOTES §4 measured fragment medians ~15.3-17.0 cps; this is a
+            single global stand-in for a per-speaker measurement (see TODO).
+        model_size: Whisper model used for verification.
+        language: Language forced during transcription. Forcing it skips
+            autodetection, which misbehaves on padded silence (FORK_NOTES §5).
         min_words_for_check: Expected chunks shorter than this (in words) are
-            accepted without a strict check, since ASR is unreliable on very
-            short clips and would cause spurious re-seeds.
+            accepted without a strict check — ASR is unreliable on very short
+            clips and would cause spurious re-seeds.
+        ignore_leading_words: Number of leading expected words to drop before
+            computing coverage, to absorb Whisper's leading-word drop artifact.
     """
 
-    similarity_threshold: float = 0.70
-    word_ratio_min: float = 0.60
+    coverage_min: float = 0.80
+    duration_ratio_min: float = 0.55
+    chars_per_second: float = 16.0
     model_size: str = "base"
     language: Optional[str] = None
-    min_words_for_check: int = 2
+    min_words_for_check: int = 3
+    ignore_leading_words: int = 1
+    # TODO(fork): replace chars_per_second with a per-profile pace measured from
+    # the reference audio or prior blessed renders — global cps is a rough stand-in.
 
 
-def compare_texts(expected: str, got: str, cfg: VerifyConfig) -> Tuple[bool, dict]:
-    """Compare intended text against a transcript. Returns ``(ok, detail)``."""
-    exp = _normalize(expected)
-    got_words = _normalize(got)
+def evaluate(
+    expected_text: str,
+    transcript: str,
+    audio_duration_sec: float,
+    cfg: VerifyConfig,
+) -> Tuple[bool, dict]:
+    """Judge one rendered chunk. Returns ``(ok, detail)``.
 
-    similarity = SequenceMatcher(None, " ".join(exp), " ".join(got_words)).ratio()
-    word_ratio = (len(got_words) / len(exp)) if exp else 1.0
+    Never gates on the first token and never requires an exact match — see the
+    module docstring for why.
+    """
+    exp = _normalize(expected_text)
+    got = _normalize(transcript)
 
+    # Too short to judge reliably — accept rather than churn seeds.
     if len(exp) < cfg.min_words_for_check:
-        # Too short to judge reliably — accept rather than churn seeds.
-        ok = True
-    else:
-        ok = (
-            similarity >= cfg.similarity_threshold
-            and word_ratio >= cfg.word_ratio_min
-        )
+        return True, {
+            "transcript": transcript[:200],
+            "skipped": "too_short",
+            "expected_words": len(exp),
+            "got_words": len(got),
+        }
+
+    # Word coverage, excluding the leading token(s): Whisper's leading-word drop
+    # on short padded clips is an artifact, not a render failure.
+    exp_core = exp[cfg.ignore_leading_words :] or exp
+    sm = SequenceMatcher(None, exp_core, got, autojunk=False)
+    matched = sum(block.size for block in sm.get_matching_blocks())
+    coverage = matched / len(exp_core) if exp_core else 1.0
+
+    # Duration shortfall — the primary truncation signal.
+    expected_sec = len(expected_text) / cfg.chars_per_second if cfg.chars_per_second else 0.0
+    duration_ratio = (audio_duration_sec / expected_sec) if expected_sec > 0 else 1.0
+
+    ok = coverage >= cfg.coverage_min and duration_ratio >= cfg.duration_ratio_min
 
     detail = {
-        "transcript": got[:200],
-        "similarity": round(similarity, 3),
-        "word_ratio": round(word_ratio, 3),
+        "transcript": transcript[:200],
+        "coverage": round(coverage, 3),
+        "duration_ratio": round(duration_ratio, 3),
+        "duration_sec": round(audio_duration_sec, 3),
+        "expected_sec": round(expected_sec, 3),
         "expected_words": len(exp),
-        "got_words": len(got_words),
+        "got_words": len(got),
     }
     return ok, detail
 
@@ -94,14 +132,16 @@ def make_chunk_verifier(stt_backend, cfg: Optional[VerifyConfig] = None):
     """Build an async ``verify_fn(chunk_text, audio, sample_rate)`` closure.
 
     The returned function writes the rendered chunk to a temp WAV, transcribes
-    it via *stt_backend*, and compares. It fails **open**: if transcription
-    itself errors, the chunk is accepted (``ok=True``) so a flaky verifier
-    never blocks a render — the render is still returned either way.
+    it via *stt_backend*, and evaluates it. It fails **open**: if transcription
+    itself errors, the chunk is accepted (``ok=True``) so a flaky verifier never
+    blocks a render — the render is still returned either way.
     """
     cfg = cfg or VerifyConfig()
 
     async def verify_fn(chunk_text: str, audio: np.ndarray, sample_rate: int):
         import soundfile as sf
+
+        duration_sec = (len(audio) / sample_rate) if sample_rate else 0.0
 
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp_path = tmp.name
@@ -112,7 +152,10 @@ def make_chunk_verifier(stt_backend, cfg: Optional[VerifyConfig] = None):
                 tmp_path,
                 cfg.language,
                 cfg.model_size,
-                _VERIFY_WHISPER_OPTIONS,
+                # Force the language (skips autodetect on padded silence). No
+                # thresholds here — the leading-word drop is padding+greedy, not
+                # silence, so no decode option fixes it (FORK_NOTES §5).
+                None,
             )
         except Exception as e:  # fail open — never block a render on STT issues
             logger.warning("verification transcribe failed, accepting chunk: %s", e)
@@ -123,12 +166,12 @@ def make_chunk_verifier(stt_backend, cfg: Optional[VerifyConfig] = None):
             except OSError:
                 pass
 
-        ok, detail = compare_texts(chunk_text, transcript, cfg)
+        ok, detail = evaluate(chunk_text, transcript, duration_sec, cfg)
         if not ok:
             logger.info(
-                "chunk verify mismatch sim=%.2f word_ratio=%.2f exp=%d got=%d",
-                detail["similarity"],
-                detail["word_ratio"],
+                "chunk verify FAIL coverage=%.2f dur_ratio=%.2f exp_words=%d got_words=%d",
+                detail.get("coverage", -1),
+                detail.get("duration_ratio", -1),
                 detail["expected_words"],
                 detail["got_words"],
             )

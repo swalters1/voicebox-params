@@ -102,9 +102,20 @@ async def run_generation(
         result = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
         audio, sample_rate, resolved_seed = result.audio, result.sample_rate, result.seed
 
-        # Assemble the reproducible record of what actually ran.
+        # Assemble the reproducible record of what actually ran. Persist the
+        # FULLY-RESOLVED param set (defaults + overrides), not just the deltas,
+        # so the row alone reproduces the render (FORK_NOTES §7c).
+        if engine == "chatterbox_turbo":
+            from ..backends.chatterbox_turbo_backend import TURBO_DEFAULT_PARAMS
+
+            resolved_tts = {**TURBO_DEFAULT_PARAMS, **(tts_params or {})}
+        else:
+            resolved_tts = dict(tts_params or {})
+
         gen_params_record: dict = {
-            "tts_params": tts_params or {},
+            "engine": engine,
+            "tts_params": resolved_tts,
+            "tts_overrides": tts_params or {},
             "chunk_seeds": result.chunk_seeds,
         }
         if result.verify is not None:
@@ -143,15 +154,21 @@ async def run_generation(
                 db=bg_db,
             )
 
-        await history.update_generation_status(
+        status_kwargs: dict = dict(
             generation_id=generation_id,
             status="completed",
             db=bg_db,
             audio_path=final_path,
             duration=duration,
-            seed=resolved_seed,
-            gen_params=gen_params_record,
         )
+        # Only the initial generate records seed/params onto the parent row.
+        # retry reuses the parent's existing seed; regenerate's output is a new
+        # version, so writing the take's random seed onto the parent would
+        # clobber the original render's recorded seed and gen_params.
+        if mode == "generate":
+            status_kwargs["seed"] = resolved_seed
+            status_kwargs["gen_params"] = gen_params_record
+        await history.update_generation_status(**status_kwargs)
 
     except asyncio.CancelledError:
         await history.update_generation_status(
