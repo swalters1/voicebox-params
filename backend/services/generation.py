@@ -95,9 +95,11 @@ async def run_generation(
             from . import transcribe as transcribe_svc
             from ..utils.verify import (
                 make_chunk_verifier, build_verify_config, build_escalation_config,
+                warn_if_chunks_exceed_window,
             )
 
             vcfg = build_verify_config(verify_config, language)
+            warn_if_chunks_exceed_window(gen_kwargs.get("max_chunk_chars"), vcfg)
             stt_backend = transcribe_svc.get_whisper_model()
             gen_kwargs["verify_fn"] = make_chunk_verifier(stt_backend, vcfg)
             gen_kwargs["escalation"] = build_escalation_config(verify_config)
