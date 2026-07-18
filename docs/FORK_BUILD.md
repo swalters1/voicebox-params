@@ -95,11 +95,16 @@ secrets. Do **not** reuse upstream's pubkey — you don't hold its private key.
    `ImportError` at runtime on the verify/advanced-options paths.
 2. **Frontend changes are pure additions** (advanced-mode panel + verify controls +
    `verified` badge) — no new npm deps, so `bun install` is unchanged.
-3. **App identity.** `tauri/src-tauri/tauri.conf.json` keeps `identifier`
-   `sh.voicebox.app` and `productName` `Voicebox`. If you want the fork to install
-   **alongside** production instead of replacing it, change the `identifier` (and
-   ideally `productName`) and use your own signing keys. To ship it as a drop-in
-   update to the existing install, keep both and reuse the upstream signing key.
+3. **App identity.** The fork ships as a **distinct app** so it installs
+   alongside (not over) an upstream Voicebox: `tauri/src-tauri/tauri.conf.json`
+   sets `productName` `Voicebox Fork`, `identifier` `sh.voicebox.fork`, and
+   `version` `0.6.0` (kept in sync with the workspace `package.json`s). The new
+   identifier gives it its own data dir (`%APPDATA%\sh.voicebox.fork`) and its
+   own installer UpgradeCode. To instead replace an upstream install, revert the
+   identifier/name and just bump the version.
+4. **Windows-only release matrix.** `release.yml` builds only `windows-latest`
+   (the fork's target); the upstream macOS legs are removed so release runs stay
+   green. Restore them in the matrix if Apple builds are ever needed.
 
 ## Merge plan to get here
 
