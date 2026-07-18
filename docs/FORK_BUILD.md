@@ -95,13 +95,23 @@ secrets. Do **not** reuse upstream's pubkey — you don't hold its private key.
    `ImportError` at runtime on the verify/advanced-options paths.
 2. **Frontend changes are pure additions** (advanced-mode panel + verify controls +
    `verified` badge) — no new npm deps, so `bun install` is unchanged.
-3. **App identity.** The fork ships as a **distinct app** so it installs
-   alongside (not over) an upstream Voicebox: `tauri/src-tauri/tauri.conf.json`
-   sets `productName` `Voicebox Fork`, `identifier` `sh.voicebox.fork`, and
-   `version` `0.6.0` (kept in sync with the workspace `package.json`s). The new
-   identifier gives it its own data dir (`%APPDATA%\sh.voicebox.fork`) and its
-   own installer UpgradeCode. To instead replace an upstream install, revert the
-   identifier/name and just bump the version.
+3. **App identity — in-place upgrade.** The fork keeps `identifier`
+   `sh.voicebox.app` and `productName` `Voicebox`, with `version` `0.6.1`
+   (synced across the workspace `package.json`s and `backend/__init__.py`
+   `__version__`). Installing it **upgrades** an existing Voicebox in place and
+   reuses its data dir (`%APPDATA%\sh.voicebox.app`) — the profiles/voices and
+   generations are already there. Back up that dir before first launch (the
+   fork's additive migrations run on it). The updater endpoint is repointed at
+   the fork's releases so it never auto-updates back to stock.
+4. **GPU backend download.** The CUDA/ROCm sidecars are *downloaded* into
+   `backends/{cuda,rocm}/` on demand, and the URL + version tag are the fork's:
+   `backend/services/{cuda,rocm}.py` `GITHUB_RELEASES_URL` points at
+   `swalters1/voicebox-params/releases/download`, and the tag is `v{__version__}`
+   (`v0.6.1`). The Rust startup version-checks the downloaded backend's
+   `--version` against the app version, so `backend/__init__.py __version__`,
+   `tauri.conf.json version`, and the git tag must all match. **The matching
+   release must be PUBLISHED (not draft)** — `releases/download/{tag}/...` won't
+   serve draft assets.
 4. **Windows-only release matrix.** `release.yml` builds only `windows-latest`
    (the fork's target); the upstream macOS legs are removed so release runs stay
    green. Restore them in the matrix if Apple builds are ever needed.
