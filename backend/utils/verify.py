@@ -17,6 +17,15 @@ Gate design is driven by hard-won findings (see docs/FORK_NOTES.md §5):
   seen as a **duration shortfall** against the speaker's pace. That is the
   primary signal here; word-coverage (excluding the leading token) is the
   secondary one.
+* Whisper's 30s window cuts BOTH ways. The same single-window call that pads a
+  short clip **stops at 30s on a long one**, returning only the opening of the
+  audio. A >30s chunk transcribed whole therefore looks exactly like mass
+  truncation — clean prefix, hard stop — and fails good audio. At the default
+  ``max_chunk_chars=800`` and ~17 cps a chunk is ~45s, so this is the DEFAULT
+  path, not an edge case; escalation then hides it by splitting until the
+  pieces fall under 30s, burning the whole retry ladder on correct renders.
+  Hard rule: **never transcribe more than ~25s in one call** — see
+  :func:`split_for_stt`.
 
 Thresholds are deliberately conservative STRUCTURAL defaults, not tuned
 constants — per FORK_NOTES §4 they need a rate measured over many seeds × texts
@@ -45,6 +54,91 @@ _WORD_RE = re.compile(r"[a-z0-9']+")
 def _normalize(text: str) -> list[str]:
     """Lowercase and tokenize to comparable word units (drops punctuation)."""
     return _WORD_RE.findall(text.lower())
+
+
+# Whisper decodes a single 30s mel window per call. Stay safely under it: the
+# margin absorbs the boundary search below and any resampling rounding.
+STT_WINDOW_SEC = 25.0
+
+# How far back from a window boundary to hunt for a quiet point to cut on.
+_CUT_SEARCH_SEC = 2.0
+
+
+def _quietest_index(mono: np.ndarray, sample_rate: int, lo: int, hi: int) -> int:
+    """Index of the lowest-energy frame in ``[lo, hi)`` — a good place to cut."""
+    frame = max(1, int(0.02 * sample_rate))  # 20ms
+    best_idx, best_energy = lo, None
+    for start in range(lo, hi, frame):
+        segment = mono[start : start + frame]
+        if segment.size == 0:
+            break
+        energy = float(np.mean(np.square(segment)))
+        if best_energy is None or energy < best_energy:
+            best_energy, best_idx = energy, start
+    return best_idx
+
+
+def split_for_stt(
+    audio: np.ndarray,
+    sample_rate: int,
+    window_sec: float = STT_WINDOW_SEC,
+) -> list[np.ndarray]:
+    """Split *audio* into pieces short enough for one Whisper call each.
+
+    Audio at or under *window_sec* is returned untouched (the overwhelmingly
+    common case — one slice, no extra cost). Longer audio is cut at the
+    quietest point in the couple of seconds before each boundary, so seams land
+    in a pause rather than mid-word wherever possible.
+
+    Returning the input unchanged when it already fits keeps this a no-op for
+    normal chunks; it only engages where the old code was silently wrong.
+    """
+    if sample_rate <= 0 or audio.size == 0:
+        return [audio]
+
+    window = int(window_sec * sample_rate)
+    total = audio.shape[0]
+    if window <= 0 or total <= window:
+        return [audio]
+
+    mono = audio if audio.ndim == 1 else audio.mean(axis=1)
+    search = min(int(_CUT_SEARCH_SEC * sample_rate), window // 2)
+
+    slices: list[np.ndarray] = []
+    start = 0
+    while total - start > window:
+        boundary = start + window
+        cut = _quietest_index(mono, sample_rate, boundary - search, boundary)
+        if cut <= start:  # degenerate search band — fall back to a hard cut
+            cut = boundary
+        slices.append(audio[start:cut])
+        start = cut
+    slices.append(audio[start:])
+    return slices
+
+
+def warn_if_chunks_exceed_window(max_chunk_chars: Optional[int], cfg: "VerifyConfig") -> None:
+    """Log when the configured chunk size implies audio past the STT window.
+
+    Verification handles it correctly regardless (see :func:`split_for_stt`),
+    but a chunk that needs windowing is also a chunk long enough to be worth
+    rendering in smaller pieces, so make the condition visible rather than
+    inferred.
+    """
+    if not max_chunk_chars or cfg.chars_per_second <= 0:
+        return
+    implied_sec = max_chunk_chars / cfg.chars_per_second
+    if implied_sec > STT_WINDOW_SEC:
+        logger.warning(
+            "max_chunk_chars=%d at %.1f cps implies ~%.0fs of audio per chunk, past the "
+            "%.0fs STT window; verification will transcribe in slices. Consider "
+            "max_chunk_chars<=%d for one-shot verification.",
+            max_chunk_chars,
+            cfg.chars_per_second,
+            implied_sec,
+            STT_WINDOW_SEC,
+            int(STT_WINDOW_SEC * cfg.chars_per_second),
+        )
 
 
 @dataclass
@@ -186,24 +280,25 @@ def evaluate(
 def make_chunk_verifier(stt_backend, cfg: Optional[VerifyConfig] = None):
     """Build an async ``verify_fn(chunk_text, audio, sample_rate)`` closure.
 
-    The returned function writes the rendered chunk to a temp WAV, transcribes
-    it via *stt_backend*, and evaluates it. It fails **open**: if transcription
-    itself errors, the chunk is accepted (``ok=True``) so a flaky verifier never
-    blocks a render — the render is still returned either way.
+    The returned function writes the rendered chunk to temp WAV(s), transcribes
+    via *stt_backend*, and evaluates it. Audio longer than the Whisper window is
+    transcribed in slices and the transcripts joined — a single call would
+    silently return only the first 30s and fail good audio (see the module
+    docstring). It fails **open**: if transcription itself errors, the chunk is
+    accepted (``ok=True``) so a flaky verifier never blocks a render — the
+    render is still returned either way.
     """
     cfg = cfg or VerifyConfig()
 
-    async def verify_fn(chunk_text: str, audio: np.ndarray, sample_rate: int):
+    async def _transcribe(piece: np.ndarray, sample_rate: int) -> str:
         import soundfile as sf
-
-        duration_sec = (len(audio) / sample_rate) if sample_rate else 0.0
 
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp_path = tmp.name
         tmp.close()
         try:
-            sf.write(tmp_path, audio, sample_rate, format="WAV")
-            transcript = await stt_backend.transcribe(
+            sf.write(tmp_path, piece, sample_rate, format="WAV")
+            return await stt_backend.transcribe(
                 tmp_path,
                 cfg.language,
                 cfg.model_size,
@@ -212,16 +307,27 @@ def make_chunk_verifier(stt_backend, cfg: Optional[VerifyConfig] = None):
                 # silence, so no decode option fixes it (FORK_NOTES §5).
                 None,
             )
-        except Exception as e:  # fail open — never block a render on STT issues
-            logger.warning("verification transcribe failed, accepting chunk: %s", e)
-            return True, {"error": str(e)}
         finally:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
 
+    async def verify_fn(chunk_text: str, audio: np.ndarray, sample_rate: int):
+        duration_sec = (len(audio) / sample_rate) if sample_rate else 0.0
+
+        pieces = split_for_stt(audio, sample_rate)
+        try:
+            transcripts = [await _transcribe(piece, sample_rate) for piece in pieces]
+        except Exception as e:  # fail open — never block a render on STT issues
+            logger.warning("verification transcribe failed, accepting chunk: %s", e)
+            return True, {"error": str(e)}
+
+        transcript = " ".join(t.strip() for t in transcripts if t and t.strip())
+
         ok, detail = evaluate(chunk_text, transcript, duration_sec, cfg)
+        if len(pieces) > 1:
+            detail["stt_windows"] = len(pieces)
         if not ok:
             logger.info(
                 "chunk verify FAIL coverage=%.2f dur_ratio=%.2f exp_words=%d got_words=%d",
