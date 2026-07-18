@@ -24,3 +24,47 @@ jobs:
 
       - name: Build web smoke test
         run: bun run build:web
+
+  # Fork-added. Upstream CI is frontend-only, so until now nothing exercised the
+  # backend and the fork's tests ran only on a developer's machine — where they
+  # would have rotted silently. These cover the reliability logic this fork
+  # exists for: the verify gate's STT windowing and the recast inheritance rules.
+  backend-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Deliberately NOT the full requirements.txt — that drags in the whole ML
+      # stack (chatterbox, transformers, CUDA wheels) for tests that render no
+      # audio and load no model. This is the minimal import closure, verified by
+      # running the suite in a clean venv.
+      #
+      # torch is required but only as an import: backend/utils/cache.py uses
+      # torch.load/save for the voice-prompt cache and is pulled in transitively
+      # by routes/generations.py. The CPU wheel is enough and avoids the
+      # multi-GB CUDA download.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install pytest pytest-asyncio fastapi 'sqlalchemy>=2' pydantic \
+                      numpy soundfile librosa pillow typing_extensions python-multipart
+
+      # Scoped to the fork's own tests on purpose. The pre-existing files in
+      # backend/tests/ predate this fork and have not been audited for whether
+      # they pass in a lean environment; widen this list once they have been,
+      # rather than pinning a red suite now.
+      - name: Run fork backend tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pytest backend/tests/test_verify_stt_window.py \
+                 backend/tests/test_regenerate_as.py \
+                 -v --asyncio-mode=auto
