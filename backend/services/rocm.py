@@ -22,13 +22,12 @@ import tarfile
 from pathlib import Path
 from typing import Optional
 
-from ..config import get_data_dir
+from ..config import get_data_dir, get_releases_base_url
 from ..utils.progress import get_progress_manager
 from .. import __version__
 
 logger = logging.getLogger(__name__)
 
-GITHUB_RELEASES_URL = "https://github.com/swalters1/voicebox-params/releases/download"
 
 PROGRESS_KEY = "rocm-backend"
 
@@ -285,7 +284,7 @@ async def _download_rocm_binary_locked(version: Optional[str] = None):
 
     # Server core and libs archive are both published under the app-version
     # release tag; the libs content version is encoded in the filename only.
-    server_base_url = f"{GITHUB_RELEASES_URL}/{version}"
+    server_base_url = f"{get_releases_base_url()}/{version}"
     libs_base_url = server_base_url
     server_archive = "voicebox-server-rocm.tar.gz"
     libs_archive = f"rocm-libs-{ROCM_LIBS_VERSION}.tar.gz"
