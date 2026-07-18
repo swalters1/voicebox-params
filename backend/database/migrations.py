@@ -204,6 +204,10 @@ def _migrate_generation_versions(engine, inspector, tables: set[str]) -> None:
     columns = _get_columns(inspector, "generation_versions")
     if "source_version_id" not in columns:
         _add_column(engine, "generation_versions", "source_version_id VARCHAR", "source_version_id")
+    if "profile_id" not in columns:
+        # "Regenerate as ..." records the voice per take; older takes stay NULL
+        # and fall back to the parent generation's profile.
+        _add_column(engine, "generation_versions", "profile_id VARCHAR", "profile_id")
 
 
 def _migrate_capture_settings(engine, inspector, tables: set[str]) -> None:

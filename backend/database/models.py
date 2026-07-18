@@ -145,6 +145,11 @@ class GenerationVersion(Base):
     generation_id = Column(String, ForeignKey("generations.id"), nullable=False)
     label = Column(String, nullable=False)
     audio_path = Column(String, nullable=False)
+    # Which voice rendered THIS take. Null on takes predating "Regenerate as..."
+    # (and on same-voice regenerates), where the parent generation's profile
+    # applies. Without it a recast take would be misattributed to the parent
+    # row's single profile_id.
+    profile_id = Column(String, ForeignKey("profiles.id"), nullable=True)
     effects_chain = Column(Text, nullable=True)
     source_version_id = Column(String, ForeignKey("generation_versions.id"), nullable=True)
     is_default = Column(Boolean, default=False)

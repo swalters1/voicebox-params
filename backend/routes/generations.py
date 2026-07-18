@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -273,13 +274,80 @@ async def retry_generation(generation_id: str, db: Session = Depends(get_db)):
     "/generate/{generation_id}/regenerate",
     response_model=models.GenerationResponse,
 )
-async def regenerate_generation(generation_id: str, db: Session = Depends(get_db)):
-    """Re-run TTS with the same parameters and save the result as a new version."""
+async def regenerate_generation(
+    generation_id: str,
+    data: Optional[models.RegenerateRequest] = None,
+    db: Session = Depends(get_db),
+):
+    """Re-run TTS and save the result as a new take.
+
+    With no body (or no ``profile_id``) this is a plain regenerate: same voice,
+    another take. With ``profile_id`` it is a **recast** — the same text in a
+    different voice, stored as a comparable take under the same generation.
+
+    Inheritance rules (FORK_NOTES / issue #4):
+
+    * ``tts_params`` are inherited from the parent's resolved record — a recast
+      should sound like the same tuning, just a different speaker.
+    * ``chars_per_second`` is deliberately NOT inherited on a recast. Pace is
+      per-voice, and verify predicts expected duration from it; reusing the
+      previous voice's pace makes a complete render look short.
+    * The seed is ALWAYS re-rolled unless explicitly supplied. Determinism holds
+      over ``(seed, text, ref_audio, params)``, so reusing the parent's seed
+      reproduces byte-identical audio — useless for "another take", and
+      meaningless across voices since the reference audio changed.
+    """
+    data = data or models.RegenerateRequest()
+
     gen = db.query(DBGeneration).filter_by(id=generation_id).first()
     if not gen:
         raise HTTPException(status_code=404, detail="Generation not found")
     if (gen.status or "completed") != "completed":
         raise HTTPException(status_code=400, detail="Generation must be completed to regenerate")
+
+    recast_profile_id = data.profile_id if data.profile_id != gen.profile_id else None
+    render_profile_id = recast_profile_id or gen.profile_id
+
+    engine = gen.engine or "qwen"
+
+    profile = await profiles.get_profile(render_profile_id, db)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if recast_profile_id:
+        # The new voice may not support the parent's engine — fail before the
+        # row flips to "generating".
+        try:
+            profiles.validate_profile_engine(profile, engine)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    parent_params = (gen.gen_params or {}) if isinstance(gen.gen_params, dict) else {}
+
+    # Inherit the parent's resolved tts_params unless overridden. Re-resolved
+    # below so a cross-engine or stale key fails loudly rather than silently.
+    tts_overrides = data.tts_params
+    if tts_overrides is None:
+        tts_overrides = parent_params.get("tts_params") or None
+
+    verify_overrides = data.verify_config
+    if verify_overrides is None:
+        inherited = parent_params.get("verify_config") or {}
+        if isinstance(inherited, dict):
+            # Drop the gate's derived/per-voice values: chars_per_second is the
+            # speaker's pace and must be re-derived for a different voice.
+            verify_overrides = {
+                k: v
+                for k, v in inherited.items()
+                if k not in ("language",) and not (recast_profile_id and k == "chars_per_second")
+            } or None
+
+    resolved_tts = _resolve_tts_options(
+        engine,
+        gen.language,
+        getattr(profile, "option_overrides", None),
+        tts_overrides,
+    )
+    resolved_verify = _resolve_verify_options(verify_overrides)
 
     gen.status = "generating"
     gen.error = None
@@ -289,7 +357,7 @@ async def regenerate_generation(generation_id: str, db: Session = Depends(get_db
     task_manager = get_task_manager()
     task_manager.start_generation(
         task_id=generation_id,
-        profile_id=gen.profile_id,
+        profile_id=render_profile_id,
         text=gen.text,
     )
 
@@ -299,15 +367,19 @@ async def regenerate_generation(generation_id: str, db: Session = Depends(get_db
         generation_id,
         run_generation(
             generation_id=generation_id,
-            profile_id=gen.profile_id,
+            profile_id=render_profile_id,
             text=gen.text,
             language=gen.language,
-            engine=gen.engine or "qwen",
+            engine=engine,
             model_size=gen.model_size or "1.7B",
-            seed=gen.seed,
+            seed=data.seed,
             instruct=gen.instruct,
             mode="regenerate",
             version_id=version_id,
+            tts_params=resolved_tts,
+            verify=bool(data.verify),
+            verify_config=resolved_verify,
+            recast_profile_id=recast_profile_id,
         )
     )
 
