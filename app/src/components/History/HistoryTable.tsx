@@ -56,7 +56,7 @@ import {
 } from '@/lib/hooks/useHistory';
 import { cn } from '@/lib/utils/cn';
 import { formatDate, formatDuration, formatEngineName } from '@/lib/utils/format';
-import { useProfile } from '@/lib/hooks/useProfiles';
+import { useProfile, useProfiles } from '@/lib/hooks/useProfiles';
 import { useGenerationStore } from '@/stores/generationStore';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -280,6 +280,12 @@ export function HistoryTable() {
   // the menu item is both explicit and lower friction.
   const selectedProfileId = useUIStore((state) => state.selectedProfileId);
   const { data: selectedProfile } = useProfile(selectedProfileId || '');
+
+  // Voice names for labelling recast takes. A take carries profile_id ONLY when
+  // it was rendered by a different voice than its parent, so this stays absent
+  // on ordinary takes rather than repeating the row's own voice on every line.
+  const { data: allProfiles } = useProfiles();
+  const profileNames = new Map((allProfiles ?? []).map((p) => [p.id, p.name]));
 
   /**
    * Re-render a row as a new take. Passing *recastProfileId* recasts it in a
@@ -759,6 +765,12 @@ export function HistoryTable() {
                                 sourceVersion.effects_chain &&
                                 sourceVersion.effects_chain.length > 0;
 
+                              // Recast takes: say WHICH voice, otherwise
+                              // "take-2" gives no clue why it exists.
+                              const takeVoice = v.profile_id
+                                ? profileNames.get(v.profile_id)
+                                : null;
+
                               return (
                                 <button
                                   key={v.id}
@@ -773,6 +785,12 @@ export function HistoryTable() {
                                 >
                                   <AudioLines className="h-3 w-3 shrink-0 text-muted-foreground" />
                                   <span className="truncate text-xs font-medium">{v.label}</span>
+                                  {takeVoice && (
+                                    <span className="flex items-center gap-1 shrink-0 text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full">
+                                      <Users className="h-2.5 w-2.5" />
+                                      {takeVoice}
+                                    </span>
+                                  )}
                                   {v.effects_chain && v.effects_chain.length > 0 && (
                                     <span className="text-[10px] text-muted-foreground truncate">
                                       {v.effects_chain.map((e) => e.type).join(' → ')}
