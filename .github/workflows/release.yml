@@ -13,15 +13,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Fork ships Windows only — the macOS (mlx / intel) legs are dropped so
+        # release runs stay green. Restore the macOS entries here if the fork
+        # ever needs Apple builds.
         include:
-          - platform: "macos-latest"
-            args: "--target aarch64-apple-darwin"
-            python-version: "3.12"
-            backend: "mlx"
-          - platform: "macos-15-intel"
-            args: "--target x86_64-apple-darwin"
-            python-version: "3.12"
-            backend: "pytorch"
           - platform: "windows-latest"
             args: ""
             python-version: "3.12"
