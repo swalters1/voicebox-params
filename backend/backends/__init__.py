@@ -105,9 +105,17 @@ class TTSBackend(Protocol):
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio from text.
+
+        Args:
+            options: Optional resolved inference overrides (keys from the
+                backend's ``PARAM_SPEC``). Backends that declare no spec may
+                ignore it; callers should only pass it to backends that declare
+                an ``options`` parameter (see ``generate_chunked``'s capability
+                detection).
 
         Returns:
             Tuple of (audio_array, sample_rate)
@@ -145,9 +153,15 @@ class STTBackend(Protocol):
         audio_path: str,
         language: Optional[str] = None,
         model_size: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> str:
         """
         Transcribe audio to text.
+
+        Args:
+            options: Optional Whisper decode overrides (e.g.
+                ``no_speech_threshold``, ``condition_on_previous_text``).
+                Unsupported keys are ignored gracefully.
 
         Returns:
             Transcribed text
@@ -713,6 +727,54 @@ def get_tts_backend_for_engine(engine: str) -> TTSBackend:
 
         _tts_backends[engine] = backend
         return backend
+
+
+def get_param_spec(engine: str) -> list:
+    """Return the engine's declarative PARAM_SPEC (empty if none / unavailable).
+
+    Backends without tunable knobs (or whose optional deps aren't installed in
+    this environment) yield ``[]`` rather than raising, so callers and the
+    ``GET /engines`` endpoint degrade gracefully.
+    """
+    try:
+        backend = get_tts_backend_for_engine(engine)
+    except Exception:
+        return []
+    return list(getattr(backend, "PARAM_SPEC", []) or [])
+
+
+def get_engine_language_defaults(engine: str, language: str) -> dict:
+    """Per-language option deltas for an engine (the §7b language layer).
+
+    Returns {} for engines without language-specific tuning or when unavailable.
+    """
+    try:
+        backend = get_tts_backend_for_engine(engine)
+    except Exception:
+        return {}
+    fn = getattr(backend, "language_defaults", None)
+    if fn is None:
+        return {}
+    try:
+        return dict(fn(language) or {})
+    except Exception:
+        return {}
+
+
+def list_engine_specs() -> list[dict]:
+    """Capability list for ``GET /engines``: engine, display name, param spec."""
+    from ..utils.param_spec import spec_as_dicts
+
+    out = []
+    for engine, display in TTS_ENGINES.items():
+        out.append(
+            {
+                "engine": engine,
+                "display_name": display,
+                "param_spec": spec_as_dicts(get_param_spec(engine)),
+            }
+        )
+    return out
 
 
 def get_stt_backend() -> STTBackend:

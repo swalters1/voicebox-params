@@ -16,13 +16,46 @@ router = APIRouter()
 UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1MB
 
 
+@router.get("/transcribe/params")
+async def transcribe_params():
+    """Advertise the Whisper decode-option surface for the advanced-mode UI.
+
+    Mirrors GET /engines but for transcription (FORK_NOTES §7f). Send chosen
+    values as the ``options`` JSON field on /transcribe.
+    """
+    from ..utils.param_spec import spec_as_dicts
+
+    return {"param_spec": spec_as_dicts(transcribe.WHISPER_PARAM_SPEC)}
+
+
 @router.post("/transcribe", response_model=models.TranscriptionResponse)
 async def transcribe_audio(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     model: str | None = Form(None),
+    options: str | None = Form(None),
 ):
-    """Transcribe audio file to text."""
+    """Transcribe audio file to text.
+
+    ``options`` is an optional JSON string of Whisper decode overrides validated
+    against WHISPER_PARAM_SPEC (see GET /transcribe/params), e.g.
+    ``{"no_speech_threshold": 0.2}``. Unknown/out-of-range keys -> 400. Only the
+    keys you set are applied; the resolved set is echoed on the response.
+    """
+    whisper_options: dict | None = None
+    if options:
+        import json
+
+        from ..utils.param_spec import validate_options, OptionError
+
+        try:
+            parsed = json.loads(options)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid options JSON: {e}")
+        try:
+            whisper_options = validate_options(transcribe.WHISPER_PARAM_SPEC, parsed)
+        except OptionError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         while chunk := await file.read(UPLOAD_CHUNK_SIZE):
             tmp.write(chunk)
@@ -69,11 +102,14 @@ async def transcribe_audio(
                 },
             )
 
-        text = await whisper_model.transcribe(tmp_path, language, model_size)
+        text = await whisper_model.transcribe(
+            tmp_path, language, model_size, whisper_options
+        )
 
         return models.TranscriptionResponse(
             text=text,
             duration=duration,
+            options=whisper_options or None,
         )
 
     except HTTPException:

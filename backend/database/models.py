@@ -38,6 +38,11 @@ class VoiceProfile(Base):
     preset_voice_id = Column(String, nullable=True)  # e.g. "am_adam" — only for preset
     design_prompt = Column(Text, nullable=True)      # text description — only for designed
     default_engine = Column(String, nullable=True)   # auto-selected engine, locked for preset
+    # Per-voice inference option overrides (FORK_NOTES §7b): the resolution
+    # layer between engine defaults and per-request options, e.g. "this voice
+    # always renders cooler". Validated against the default_engine's PARAM_SPEC
+    # at save time. JSON dict; null when the voice pins nothing.
+    option_overrides = Column(JSON, nullable=True)
     # Free-form character prompt used by the compose button and the
     # personality-rewrite path on /generate. Describes *what* this voice
     # says and how, orthogonal to how it sounds (handled by the preset /
@@ -82,6 +87,11 @@ class Generation(Base):
     # profile's personality LLM before TTS. Future sources (bulk import,
     # agent replies, etc.) can extend this.
     source = Column(String, nullable=False, default="manual")
+    # Effective engine/inference parameters used for this render (TTS decode
+    # params, per-chunk seeds, and any verification report). Stored as JSON so
+    # a completed render can be inspected and replayed exactly. Null for rows
+    # created before this column existed or by paths that don't record params.
+    gen_params = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

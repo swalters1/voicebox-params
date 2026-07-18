@@ -26,6 +26,10 @@ class VoiceProfileCreate(BaseModel):
     design_prompt: Optional[str] = Field(None, max_length=2000)
     default_engine: Optional[str] = Field(None, max_length=50)
     personality: Optional[str] = Field(None, max_length=2000)
+    option_overrides: Optional[dict] = Field(
+        None,
+        description="Per-voice inference option overrides, validated against the default_engine's PARAM_SPEC. The resolution layer between engine defaults and per-request tts_params.",
+    )
 
 
 class VoiceProfileResponse(BaseModel):
@@ -43,6 +47,7 @@ class VoiceProfileResponse(BaseModel):
     design_prompt: Optional[str] = None
     default_engine: Optional[str] = None
     personality: Optional[str] = None
+    option_overrides: Optional[dict] = None
     generation_count: int = 0
     sample_count: int = 0
     created_at: datetime
@@ -100,6 +105,18 @@ class GenerationRequest(BaseModel):
     effects_chain: Optional[List["EffectConfig"]] = Field(
         None, description="Effects chain to apply after generation (overrides profile default)"
     )
+    tts_params: Optional[dict] = Field(
+        None,
+        description="Engine inference option overrides, validated per-engine against its PARAM_SPEC (see GET /engines). Unknown keys or out-of-range values are rejected (422).",
+    )
+    verify: bool = Field(
+        default=False,
+        description="Transcribe each rendered chunk and escalate on mismatch (seed-retry -> temp -> split).",
+    )
+    verify_config: Optional[dict] = Field(
+        None,
+        description="Verify-gate tuning overrides, validated against VERIFY_PARAM_SPEC (see GET /verify/params). Unknown/out-of-range keys are rejected (422).",
+    )
 
 
 class GenerationResponse(BaseModel):
@@ -119,6 +136,7 @@ class GenerationResponse(BaseModel):
     error: Optional[str] = None
     is_favorited: bool = False
     source: str = "manual"
+    gen_params: Optional[dict] = None
     created_at: datetime
     versions: Optional[List["GenerationVersionResponse"]] = None
     active_version_id: Optional[str] = None
@@ -153,6 +171,7 @@ class HistoryResponse(BaseModel):
     status: str = "completed"
     error: Optional[str] = None
     is_favorited: bool = False
+    gen_params: Optional[dict] = None
     created_at: datetime
     versions: Optional[List["GenerationVersionResponse"]] = None
     active_version_id: Optional[str] = None
@@ -173,6 +192,9 @@ class TranscriptionRequest(BaseModel):
 
     language: Optional[str] = Field(None, pattern="^(en|zh|ja|ko|de|fr|ru|pt|es|it)$")
     model: Optional[str] = Field(None, pattern="^(base|small|medium|large|turbo)$")
+    # Note: the /transcribe route is multipart/form-data and parses an `options`
+    # JSON string field, validated against WHISPER_PARAM_SPEC (see
+    # routes/transcription.py), so this request model carries no options field.
 
 
 class TranscriptionResponse(BaseModel):
@@ -180,6 +202,8 @@ class TranscriptionResponse(BaseModel):
 
     text: str
     duration: float
+    # Echo of the resolved decode overrides that were applied (FORK_NOTES §7f).
+    options: Optional[dict] = None
 
 
 class RefinementFlagsModel(BaseModel):

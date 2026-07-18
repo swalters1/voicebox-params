@@ -2,7 +2,7 @@
 PyTorch backend implementation for TTS and STT.
 """
 
-from typing import Optional, List, Tuple
+from typing import ClassVar, Optional, List, Tuple
 import asyncio
 import logging
 import torch
@@ -314,11 +314,23 @@ class PyTorchSTTBackend:
 
             logger.info("Whisper model unloaded")
 
+    # Maps WHISPER_PARAM_SPEC option names to the kwargs HuggingFace's
+    # WhisperForConditionalGeneration.generate expects. Names that differ from
+    # the openai-whisper convention are translated here.
+    _HF_OPTION_MAP: ClassVar[dict] = {
+        "temperature": "temperature",
+        "no_speech_threshold": "no_speech_threshold",
+        "logprob_threshold": "logprob_threshold",
+        "compression_ratio_threshold": "compression_ratio_threshold",
+        "condition_on_previous_text": "condition_on_prev_tokens",
+    }
+
     async def transcribe(
         self,
         audio_path: str,
         language: Optional[str] = None,
         model_size: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> str:
         """
         Transcribe audio to text.
@@ -327,6 +339,10 @@ class PyTorchSTTBackend:
             audio_path: Path to audio file
             language: Optional language hint
             model_size: Optional model size override
+            options: Optional Whisper decode overrides (WHISPER_PARAM_SPEC naming).
+                Mapped to HuggingFace generate kwargs; if the installed
+                transformers version rejects them, transcription retries
+                without so a bad option never fails the request.
 
         Returns:
             Transcribed text
@@ -360,11 +376,43 @@ class PyTorchSTTBackend:
                 )
                 generate_kwargs["forced_decoder_ids"] = forced_decoder_ids
 
+            # Translate WHISPER_PARAM_SPEC names -> HF generate kwargs (known keys only).
+            extra_kwargs = {}
+            if options:
+                extra_kwargs = {
+                    self._HF_OPTION_MAP[k]: v
+                    for k, v in options.items()
+                    if k in self._HF_OPTION_MAP
+                }
+
             with torch.no_grad():
-                predicted_ids = self.model.generate(
-                    inputs["input_features"],
-                    **generate_kwargs,
-                )
+                try:
+                    predicted_ids = self.model.generate(
+                        inputs["input_features"],
+                        **generate_kwargs,
+                        **extra_kwargs,
+                    )
+                except Exception as e:
+                    # Decode options are strictly BEST-EFFORT. HF honors several
+                    # of these only in the long-form/timestamped path, and on
+                    # short clips that path can raise not just TypeError/
+                    # ValueError but internal errors like UnboundLocalError
+                    # ('logprobs' referenced before assignment) — see
+                    # FORK_NOTES §5. So ANY failure while applying options falls
+                    # back to plain default decoding rather than failing the
+                    # request. A genuine (options-free) generate error still
+                    # propagates from the retry below.
+                    if not extra_kwargs:
+                        raise
+                    logger.warning(
+                        "Whisper decode options failed (%s: %s); retrying with defaults",
+                        type(e).__name__,
+                        e,
+                    )
+                    predicted_ids = self.model.generate(
+                        inputs["input_features"],
+                        **generate_kwargs,
+                    )
 
             # Decode
             transcription = self.processor.batch_decode(

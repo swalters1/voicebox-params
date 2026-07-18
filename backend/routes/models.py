@@ -17,6 +17,19 @@ from ..utils.tasks import get_task_manager
 router = APIRouter()
 
 
+@router.get("/engines")
+async def list_engines():
+    """Advertise each TTS engine's tunable parameter surface.
+
+    Drives the advanced-mode UI panel (FORK_NOTES §7d): casual mode ignores it
+    and sends ``{}``; advanced mode renders a control per ``stage=="call"``
+    param. Engines with no tunable knobs report an empty ``param_spec``.
+    """
+    from ..backends import list_engine_specs
+
+    return {"engines": list_engine_specs()}
+
+
 def _get_dir_size(path: Path) -> int:
     """Get total size of a directory in bytes."""
     total = 0

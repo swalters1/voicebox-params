@@ -326,6 +326,7 @@ class MLXSTTBackend:
         audio_path: str,
         language: Optional[str] = None,
         model_size: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> str:
         """
         Transcribe audio to text.
@@ -334,6 +335,9 @@ class MLXSTTBackend:
             audio_path: Path to audio file
             language: Optional language hint
             model_size: Optional model size override
+            options: Optional Whisper decode overrides (openai-whisper naming,
+                e.g. ``no_speech_threshold``). Applied directly; if the
+                installed backend rejects them, transcription retries without.
 
         Returns:
             Transcribed text
@@ -347,11 +351,29 @@ class MLXSTTBackend:
             decode_options = {}
             if language:
                 decode_options["language"] = language
+            if options:
+                # mlx-whisper follows the openai-whisper option names, so the
+                # openai-whisper option names pass through unchanged.
+                decode_options.update(options)
 
             # Inference runs with the process's default HF_HUB_OFFLINE
             # state — see the comment in MLXTTSBackend.generate for the
             # regression this revert fixes (issue #462).
-            result = self.model.generate(str(audio_path), **decode_options)
+            try:
+                result = self.model.generate(str(audio_path), **decode_options)
+            except Exception as e:
+                # Decode options are best-effort — any failure falls back to
+                # default decoding rather than failing the request (see the
+                # PyTorch backend for the HF short-clip failure modes).
+                if not options:
+                    raise
+                logger.warning(
+                    "Whisper decode options failed (%s: %s); retrying with defaults",
+                    type(e).__name__,
+                    e,
+                )
+                base = {"language": language} if language else {}
+                result = self.model.generate(str(audio_path), **base)
 
             # Extract text from result
             if isinstance(result, str):

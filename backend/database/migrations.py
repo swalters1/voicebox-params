@@ -159,6 +159,8 @@ def _migrate_profiles(engine, inspector, tables: set[str]) -> None:
         _add_column(engine, "profiles", "default_engine VARCHAR", "default_engine")
     if "personality" not in columns:
         _add_column(engine, "profiles", "personality TEXT", "personality")
+    if "option_overrides" not in columns:
+        _add_column(engine, "profiles", "option_overrides JSON", "option_overrides")
 
 
 def _migrate_generations(engine, inspector, tables: set[str]) -> None:
@@ -184,6 +186,8 @@ def _migrate_generations(engine, inspector, tables: set[str]) -> None:
             "source VARCHAR NOT NULL DEFAULT 'manual'",
             "source",
         )
+    if "gen_params" not in columns:
+        _add_column(engine, "generations", "gen_params JSON", "gen_params")
 
 
 def _migrate_effect_presets(engine, inspector, tables: set[str]) -> None:

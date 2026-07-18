@@ -21,6 +21,65 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+def _resolve_tts_options(
+    engine: str,
+    language: str,
+    profile_overrides: dict | None,
+    request_overrides: dict | None,
+) -> dict | None:
+    """Resolve options for an engine, layering language, profile, then request.
+
+    Resolution order (last wins, FORK_NOTES §7b):
+        engine PARAM_SPEC defaults -> language defaults -> profile.option_overrides
+            -> request.tts_params
+
+    Language and profile layers are applied leniently (keys not in this engine's
+    spec, or out of range for it, are dropped — a per-voice tuning may target a
+    different default engine). Request overrides are strict: an unknown key or
+    out-of-range value is a 422.
+    """
+    from ..backends import get_param_spec, get_engine_language_defaults
+    from ..utils.param_spec import resolve_options, filter_applicable, OptionError
+
+    spec = get_param_spec(engine)
+    if not spec:
+        # Engine has no tunable params; a non-empty request override is a client
+        # error. Profile overrides for a mismatched engine are ignored.
+        if request_overrides:
+            raise HTTPException(
+                status_code=422,
+                detail=f"engine {engine!r} accepts no tts_params",
+            )
+        return None
+    try:
+        # engine defaults -> language -> profile (all lenient: keys not in THIS
+        # engine's spec, or out of its range, are dropped so they never 422 an
+        # unrelated request).
+        lang_defaults = get_engine_language_defaults(engine, language)
+        base = resolve_options(
+            spec,
+            filter_applicable(spec, lang_defaults),
+            filter_applicable(spec, profile_overrides),
+        )
+        # + request (strict: unknown key / out-of-range -> 422)
+        return resolve_options(spec, base, request_overrides or {})
+    except OptionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _resolve_verify_options(overrides: dict | None) -> dict | None:
+    """Resolve verify-gate overrides against VERIFY_PARAM_SPEC (422 on bad)."""
+    if not overrides:
+        return None
+    from ..utils.param_spec import resolve_options, OptionError
+    from ..utils.verify import VERIFY_PARAM_SPEC
+
+    try:
+        return resolve_options(VERIFY_PARAM_SPEC, overrides)
+    except OptionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
 IMPORTED_AUDIO_PROFILE_NAME = "Imported Audio"
 IMPORT_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".webm"}
 IMPORT_AUDIO_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
@@ -53,6 +112,19 @@ def _resolve_generation_engine(data: models.GenerationRequest, profile) -> str:
     return data.engine or getattr(profile, "default_engine", None) or getattr(profile, "preset_engine", None) or "qwen"
 
 
+@router.get("/verify/params")
+async def verify_params():
+    """Advertise the verify-gate tuning surface for the advanced-mode UI.
+
+    Mirrors GET /engines but for the loop-back verifier (FORK_NOTES §7f). Send
+    the chosen values as ``verify_config`` on /generate with ``verify: true``.
+    """
+    from ..utils.param_spec import spec_as_dicts
+    from ..utils.verify import VERIFY_PARAM_SPEC
+
+    return {"param_spec": spec_as_dicts(VERIFY_PARAM_SPEC)}
+
+
 @router.post("/generate", response_model=models.GenerationResponse)
 async def generate_speech(
     data: models.GenerationRequest,
@@ -73,6 +145,13 @@ async def generate_speech(
         profiles.validate_profile_engine(profile, engine)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Resolve/validate tuning options BEFORE creating the generation row, so a
+    # bad option 422s cleanly instead of orphaning a "generating" row.
+    resolved_options = _resolve_tts_options(
+        engine, data.language, getattr(profile, "option_overrides", None), data.tts_params
+    )
+    resolved_verify = _resolve_verify_options(data.verify_config)
 
     model_size = (data.model_size or "1.7B") if engine_has_model_sizes(engine) else None
 
@@ -139,6 +218,9 @@ async def generate_speech(
             mode="generate",
             max_chunk_chars=data.max_chunk_chars,
             crossfade_ms=data.crossfade_ms,
+            tts_params=resolved_options,
+            verify=data.verify,
+            verify_config=resolved_verify,
         )
     )
 
@@ -332,6 +414,9 @@ async def stream_speech(
         profiles.validate_profile_engine(profile, engine)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    resolved_options = _resolve_tts_options(
+        engine, data.language, getattr(profile, "option_overrides", None), data.tts_params
+    )
     tts_model = get_tts_backend_for_engine(engine)
     model_size = data.model_size or "1.7B"
 
@@ -352,7 +437,7 @@ async def stream_speech(
 
         trim_fn = trim_tts_output
 
-    audio, sample_rate = await generate_chunked(
+    result = await generate_chunked(
         tts_model,
         data.text,
         voice_prompt,
@@ -362,7 +447,9 @@ async def stream_speech(
         max_chunk_chars=data.max_chunk_chars,
         crossfade_ms=data.crossfade_ms,
         trim_fn=trim_fn,
+        options=resolved_options,
     )
+    audio, sample_rate = result.audio, result.sample_rate
 
     effects_chain_config = None
     if data.effects_chain is not None:

@@ -8,6 +8,8 @@ import type {
   EffectConfig,
   EffectPresetCreate,
   EffectPresetResponse,
+  EnginesResponse,
+  ParamSpecResponse,
   GenerationRequest,
   GenerationResponse,
   GenerationVersionResponse,
@@ -248,6 +250,15 @@ class ApiClient {
     await this.request<void>(`/profiles/${profileId}/avatar`, {
       method: 'DELETE',
     });
+  }
+
+  // Capabilities (advanced-mode panels build themselves from these)
+  async listEngines(): Promise<EnginesResponse> {
+    return this.request<EnginesResponse>('/engines');
+  }
+
+  async getVerifyParams(): Promise<ParamSpecResponse> {
+    return this.request<ParamSpecResponse>('/verify/params');
   }
 
   // Generation

@@ -30,6 +30,10 @@ const generationSchema = z.object({
     ])
     .optional(),
   personality: z.boolean().optional(),
+  // Advanced mode: engine inference overrides + the verify loop.
+  verify: z.boolean().optional(),
+  ttsParams: z.record(z.number()).optional(),
+  verifyConfig: z.record(z.union([z.number(), z.boolean(), z.string()])).optional(),
 });
 
 export type GenerationFormValues = z.infer<typeof generationSchema>;
@@ -68,6 +72,9 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
       instruct: '',
       engine: (selectedEngine as GenerationFormValues['engine']) || 'qwen',
       personality: false,
+      verify: false,
+      ttsParams: {},
+      verifyConfig: {},
       ...options.defaultValues,
     },
   });
@@ -157,12 +164,21 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
         crossfade_ms: crossfadeMs,
         normalize: normalizeAudio,
         effects_chain: effectsChain?.length ? effectsChain : undefined,
+        // Advanced mode — only send overrides the user actually set.
+        tts_params:
+          data.ttsParams && Object.keys(data.ttsParams).length ? data.ttsParams : undefined,
+        verify: data.verify || undefined,
+        verify_config:
+          data.verify && data.verifyConfig && Object.keys(data.verifyConfig).length
+            ? data.verifyConfig
+            : undefined,
       });
 
       // Track this generation for SSE status updates
       addPendingGeneration(result.id);
 
-      // Reset form immediately — user can start typing again
+      // Reset form immediately — user can start typing again. Keep the
+      // advanced/verify settings sticky so a batch run doesn't lose them.
       form.reset({
         text: '',
         language: data.language,
@@ -171,6 +187,9 @@ export function useGenerationForm(options: UseGenerationFormOptions = {}) {
         instruct: '',
         engine: data.engine,
         personality: data.personality,
+        verify: data.verify,
+        ttsParams: data.ttsParams,
+        verifyConfig: data.verifyConfig,
       });
       options.onSuccess?.(result.id);
     } catch (error) {

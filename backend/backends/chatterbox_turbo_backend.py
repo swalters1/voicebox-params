@@ -27,6 +27,8 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
+from ..utils.param_spec import Param, resolve_options, split_call_options
+
 CHATTERBOX_TURBO_HF_REPO = "ResembleAI/chatterbox-turbo"
 
 # Files that must be present for the turbo model
@@ -39,6 +41,17 @@ _TURBO_WEIGHT_FILES = [
 
 class ChatterboxTurboTTSBackend:
     """Chatterbox Turbo TTS backend — fast, English-only, with paralinguistic tags."""
+
+    # Declarative tuning surface (FORK_NOTES §7). Drives request validation,
+    # default fill, and the GET /engines advanced-mode panel. Ranges are
+    # permissive power-user bounds. temperature is the primary length-dependent
+    # knob (higher -> more range but more truncation on long text).
+    PARAM_SPEC: ClassVar[list] = [
+        Param("temperature", 0.8, 0.05, 2.0, desc="Higher = more range, more truncation on long text"),
+        Param("top_k", 1000, 1, 1000, desc="Sampling pool size"),
+        Param("top_p", 0.95, 0.0, 1.0, desc="Nucleus sampling threshold"),
+        Param("repetition_penalty", 1.2, 1.0, 3.0, desc="Penalize repeats; may raise late-EOS on long text"),
+    ]
 
     # Class-level lock for torch.load monkey-patching
     _load_lock: ClassVar[threading.Lock] = threading.Lock()
@@ -153,6 +166,7 @@ class ChatterboxTurboTTSBackend:
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio using Chatterbox Turbo TTS.
@@ -165,6 +179,9 @@ class ChatterboxTurboTTSBackend:
             language: Ignored (Turbo is English-only)
             seed: Random seed for reproducibility
             instruct: Unused (protocol compatibility)
+            options: Optional overrides for the PARAM_SPEC knobs. Resolved
+                against PARAM_SPEC defaults defensively, so partial or ``None``
+                options still produce the full call set.
 
         Returns:
             Tuple of (audio_array, sample_rate)
@@ -176,21 +193,24 @@ class ChatterboxTurboTTSBackend:
             logger.warning(f"Reference audio not found: {ref_audio}")
             ref_audio = None
 
+        # Fill defaults from PARAM_SPEC (single source of truth). Validation
+        # already happened at the request boundary, so unknown keys are ignored
+        # rather than rejected here. Only call-stage keys reach model.generate.
+        resolved = resolve_options(self.PARAM_SPEC, options or {}, reject_unknown=False)
+        call_kwargs = split_call_options(self.PARAM_SPEC, resolved)
+
         def _generate_sync():
             import torch
 
             if seed is not None:
                 manual_seed(seed, self._device)
 
-            logger.info("[Chatterbox Turbo] Generating (English)")
+            logger.info("[Chatterbox Turbo] Generating (English) options=%s", call_kwargs)
 
             wav = self.model.generate(
                 text,
                 audio_prompt_path=ref_audio,
-                temperature=0.8,
-                top_k=1000,
-                top_p=0.95,
-                repetition_penalty=1.2,
+                **call_kwargs,
             )
 
             # Convert tensor -> numpy

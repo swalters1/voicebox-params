@@ -9,13 +9,78 @@ Short text (≤ max_chunk_chars) uses the single-shot fast path with zero
 overhead.
 """
 
+import inspect
 import logging
+import random
 import re
+from dataclasses import dataclass, field
 from typing import List, Tuple
 
 import numpy as np
 
 logger = logging.getLogger("voicebox.chunked-tts")
+
+# Upper bound for auto-generated seeds. Kept within int32 so the value round-
+# trips cleanly through torch.manual_seed and the ``Generation.seed`` integer
+# column regardless of platform.
+_MAX_SEED = 2**31 - 1
+
+# Stride between a chunk's verify-retry seeds. A large prime keeps a chunk's
+# retry seeds clear of neighbouring chunks' base seeds (which are base+i), while
+# staying a deterministic function of the starting seed — so the entire retry
+# sequence replays from one integer (FORK_NOTES §2).
+_RETRY_STRIDE = 1_000_003
+
+# Stride between the seeds handed to split-and-recurse pieces. A different prime
+# from _RETRY_STRIDE keeps split-piece seeds clear of a unit's retry walk while
+# staying deterministic.
+_SPLIT_STRIDE = 10_000_019
+
+
+def resolve_seed(seed: int | None) -> int:
+    """Return *seed* if given, otherwise a fresh random seed.
+
+    Renders must always run with a concrete seed so the exact value can be
+    recorded and replayed later. Passing ``None`` down to the backends left
+    the RNG in its ambient state and produced un-reproducible audio.
+    """
+    return seed if seed is not None else random.randint(0, _MAX_SEED)
+
+
+@dataclass
+class ChunkedTTSResult:
+    """Result of a (possibly chunked) TTS generation.
+
+    Carries the assembled audio plus the seeds actually used, so callers can
+    persist a reproducible record of the render. ``verify`` is populated only
+    when a verification hook runs (see ``generate_chunked``'s ``verify_fn``).
+    """
+
+    audio: np.ndarray
+    sample_rate: int
+    seed: int
+    chunk_seeds: List[int] = field(default_factory=list)
+    verify: List[dict] | None = None
+    # True/False when a verifier ran (all chunks passed), else None. Lets a
+    # caller refuse to ship an all-attempts-failed render (FORK_NOTES §8).
+    verified: bool | None = None
+
+
+@dataclass
+class EscalationConfig:
+    """Staged verify-loop escalation strategy (FORK_NOTES §9).
+
+    Cheapest first: seed-retry the whole unit, then (optionally) retry at a lower
+    temperature, then split at a boundary into the safe zone and recurse — each
+    stage attacks the same early-EOS probability at a different cost.
+    """
+
+    max_attempts: int = 10          # seed-retry budget per stage (§8: 3 is too few)
+    retry_temperature: float = 0.0  # stage 2 temp; 0 = off (unproven, §9 HYPOTHESIS)
+    split_enabled: bool = True      # stage 3: split-and-recurse (the proven fix)
+    split_min_chars: int = 120      # split target — cross into the safe zone, not a 5% shave
+    join_silence_ms: int = 250      # sized pause at split joins (NOT a crossfade — §9)
+    max_split_depth: int = 2        # recursion guard
 
 # Default chunk size in characters.  Can be overridden per-request via
 # the ``max_chunk_chars`` field on GenerationRequest.
@@ -201,6 +266,155 @@ def concatenate_audio_chunks(
     return result
 
 
+def _backend_accepts_options(backend) -> bool:
+    """True if the backend's ``generate`` declares an ``options`` argument.
+
+    Lets us forward per-request tuning only to engines that support it, so
+    untuned backends keep working with the same call as before.
+    """
+    try:
+        return "options" in inspect.signature(backend.generate).parameters
+    except (ValueError, TypeError):
+        return False
+
+
+def join_with_silence(
+    chunks: List[np.ndarray],
+    sample_rate: int,
+    silence_ms: int = 250,
+) -> np.ndarray:
+    """Concatenate audio pieces with a fixed silence gap — no crossfade.
+
+    Used to join split-and-recurse pieces (FORK_NOTES §9): the crossfade join
+    used elsewhere *eats* the inter-sentence pause, which is fine for garble
+    avoidance but wrong for prose pacing. A sized silence preserves the beat.
+    """
+    pieces = [np.asarray(c, dtype=np.float32) for c in chunks if c is not None and len(c) > 0]
+    if not pieces:
+        return np.array([], dtype=np.float32)
+    if len(pieces) == 1:
+        return pieces[0]
+    gap = np.zeros(max(0, int(sample_rate * silence_ms / 1000)), dtype=np.float32)
+    out: List[np.ndarray] = [pieces[0]]
+    for p in pieces[1:]:
+        if gap.size:
+            out.append(gap)
+        out.append(p)
+    return np.concatenate(out)
+
+
+async def _render_unit(
+    backend,
+    text: str,
+    voice_prompt: dict,
+    language: str,
+    seed: int,
+    instruct: str | None,
+    trim_fn,
+    verify_fn,
+    options: dict | None,
+    esc: EscalationConfig,
+    depth: int = 0,
+) -> dict:
+    """Render one text unit with staged escalation (FORK_NOTES §9).
+
+    Stages, cheapest first: (1) seed-retry the whole unit; (2) optionally retry
+    at a lower temperature; (3) split at a boundary into the safe zone and run
+    each piece back through this same function, joining with a sized silence.
+
+    Returns a dict: ``{audio, sample_rate, verified, stage, seed, attempts,
+    splits}``. ``verified`` is None when no verifier ran, else whether the unit
+    ultimately passed. ``audio`` is always populated (best effort on failure).
+    """
+
+    async def _seed_retry(opts: dict | None, stage: str):
+        """Seed-retry at fixed *opts*. Returns (audio, sr, seed, attempts, ok)."""
+        extra = {}
+        if opts and _backend_accepts_options(backend):
+            extra["options"] = opts
+        atts: list = []
+        cur = seed
+        audio = None
+        sr = 0
+        for i in range(esc.max_attempts):
+            audio, sr = await backend.generate(text, voice_prompt, language, cur, instruct, **extra)
+            if trim_fn is not None:
+                audio = trim_fn(audio, sr)
+            if verify_fn is None:
+                return audio, sr, cur, None, True
+            ok, detail = await verify_fn(text, audio, sr)
+            atts.append({"seed": cur, "stage": stage, "ok": ok, **detail})
+            if ok:
+                return audio, sr, cur, atts, True
+            cur = (seed + (i + 1) * _RETRY_STRIDE) % _MAX_SEED
+        return audio, sr, (atts[-1]["seed"] if atts else cur), atts, False
+
+    all_attempts: list = []
+
+    # --- Stage 1: seed-retry, whole unit --------------------------------------
+    audio, sr, used_seed, atts, ok = await _seed_retry(options, "seed")
+    if atts:
+        all_attempts += atts
+    if verify_fn is None:
+        return {"audio": audio, "sample_rate": sr, "verified": None,
+                "stage": "seed", "seed": used_seed, "attempts": None, "splits": None}
+    if ok:
+        return {"audio": audio, "sample_rate": sr, "verified": True,
+                "stage": "seed", "seed": used_seed, "attempts": all_attempts, "splits": None}
+
+    # --- Stage 2: lower temperature, retry (opt-in) ---------------------------
+    if esc.retry_temperature and esc.retry_temperature > 0:
+        opts2 = dict(options or {})
+        opts2["temperature"] = esc.retry_temperature
+        a2, s2, seed2, atts2, ok2 = await _seed_retry(opts2, "temp")
+        if atts2:
+            all_attempts += atts2
+        if ok2:
+            return {"audio": a2, "sample_rate": s2, "verified": True, "stage": "temp",
+                    "seed": seed2, "attempts": all_attempts, "splits": None}
+        audio, sr, used_seed = a2, s2, seed2  # keep latest as the fallback render
+
+    # --- Stage 3: split at a boundary into the safe zone, recurse -------------
+    if esc.split_enabled and depth < esc.max_split_depth:
+        pieces = split_text_into_chunks(text, esc.split_min_chars)
+        if len(pieces) > 1:
+            logger.info("Escalating: splitting %d-char unit into %d pieces", len(text), len(pieces))
+            audios: List[np.ndarray] = []
+            reports: list = []
+            sr_final = sr or 24000
+            all_ok = True
+            for pi, piece in enumerate(pieces):
+                sub_seed = (seed + (pi + 1) * _SPLIT_STRIDE) % _MAX_SEED
+                sub = await _render_unit(backend, piece, voice_prompt, language, sub_seed,
+                                         instruct, trim_fn, verify_fn, options, esc, depth + 1)
+                audios.append(sub["audio"])
+                sr_final = sub["sample_rate"] or sr_final
+                all_ok = all_ok and bool(sub["verified"])
+                reports.append({"piece": pi, "chars": len(piece), "verified": sub["verified"],
+                                "stage": sub["stage"], "seed": sub["seed"],
+                                "attempts": sub["attempts"], "splits": sub["splits"]})
+            joined = join_with_silence(audios, sr_final, esc.join_silence_ms)
+            return {"audio": joined, "sample_rate": sr_final, "verified": all_ok,
+                    "stage": f"split-{len(pieces)}", "seed": seed,
+                    "attempts": all_attempts, "splits": reports}
+
+    # --- Exhausted: return the best (still-failing) render, flagged unverified -
+    return {"audio": audio, "sample_rate": sr, "verified": False,
+            "stage": "exhausted", "seed": used_seed, "attempts": all_attempts, "splits": None}
+
+
+def _chunk_report(index: int, unit: dict) -> dict:
+    """Shape a unit's escalation result into a per-chunk verify record."""
+    return {
+        "chunk": index,
+        "verified": unit["verified"],
+        "stage": unit["stage"],
+        "seed": unit["seed"],
+        "attempts": unit["attempts"],
+        "splits": unit["splits"],
+    }
+
+
 async def generate_chunked(
     backend,
     text: str,
@@ -211,53 +425,55 @@ async def generate_chunked(
     max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
     crossfade_ms: int = 50,
     trim_fn=None,
-) -> Tuple[np.ndarray, int]:
+    verify_fn=None,
+    escalation: EscalationConfig | None = None,
+    options: dict | None = None,
+) -> ChunkedTTSResult:
     """Generate audio with automatic chunking for long text.
 
     For text shorter than *max_chunk_chars* this is a thin wrapper around
-    ``backend.generate()`` with zero overhead.
+    ``backend.generate()``.
 
     For longer text the input is split at natural sentence boundaries,
     each chunk is generated independently, optionally trimmed (useful for
     Chatterbox engines that hallucinate trailing noise), and the results
     are concatenated with a crossfade (or hard cut if *crossfade_ms* is 0).
 
-    Parameters
-    ----------
-    backend : TTSBackend
-        Any backend implementing the ``generate()`` protocol.
-    text : str
-        Input text (may be arbitrarily long).
-    voice_prompt, language, seed, instruct
-        Forwarded to ``backend.generate()`` verbatim.
-    max_chunk_chars : int
-        Maximum characters per chunk (default 800).
-    crossfade_ms : int
-        Crossfade duration in milliseconds between chunks.  0 for a hard
-        cut with no overlap (default 50).
-    trim_fn : callable | None
-        Optional ``(audio, sample_rate) -> audio`` post-processing
-        function applied to each chunk before concatenation (e.g.
-        ``trim_tts_output`` for Chatterbox engines).
+    A concrete seed is always resolved before generation (a random one when
+    *seed* is ``None``) so the exact value can be recorded and replayed.
+
+    When *verify_fn* is supplied, each chunk runs through the staged escalation
+    (:func:`_render_unit`, FORK_NOTES §9): seed-retry, optional lower-temperature
+    retry, then split-and-recurse with a sized-pause join. *escalation* tunes
+    the budgets/strategy (defaults if omitted). Note the two join types: the
+    caller-level chunks are joined with a crossfade (garble avoidance), while an
+    escalation split joins its pieces with a sized silence (prose pacing).
 
     Returns
     -------
-    (audio, sample_rate) : Tuple[np.ndarray, int]
+    ChunkedTTSResult
+        Assembled audio, resolved base seed, per-chunk seeds, the per-chunk
+        verification report, and ``verified`` (all chunks passed / None).
     """
+    resolved_seed = resolve_seed(seed)
+    esc = escalation or EscalationConfig()
     chunks = split_text_into_chunks(text, max_chunk_chars)
 
     if len(chunks) <= 1:
-        # Short text — single-shot fast path
-        audio, sample_rate = await backend.generate(
-            text,
-            voice_prompt,
-            language,
-            seed,
-            instruct,
+        # Short text — single chunk. Fall back to the raw text when the
+        # splitter returned nothing (e.g. whitespace-only input).
+        chunk_text = chunks[0] if chunks else text
+        unit = await _render_unit(backend, chunk_text, voice_prompt, language,
+                                  resolved_seed, instruct, trim_fn, verify_fn, options, esc)
+        verified = None if verify_fn is None else bool(unit["verified"])
+        return ChunkedTTSResult(
+            audio=unit["audio"],
+            sample_rate=unit["sample_rate"],
+            seed=unit["seed"],
+            chunk_seeds=[unit["seed"]],
+            verify=[_chunk_report(0, unit)] if verify_fn is not None else None,
+            verified=verified,
         )
-        if trim_fn is not None:
-            audio = trim_fn(audio, sample_rate)
-        return audio, sample_rate
 
     # Long text — chunked generation
     logger.info(
@@ -267,33 +483,33 @@ async def generate_chunked(
         max_chunk_chars,
     )
     audio_chunks: List[np.ndarray] = []
+    chunk_seeds: List[int] = []
+    verify_report: List[dict] = []
     sample_rate: int | None = None
+    all_verified = True
 
     for i, chunk_text in enumerate(chunks):
-        logger.info(
-            "Generating chunk %d/%d (%d chars)",
-            i + 1,
-            len(chunks),
-            len(chunk_text),
-        )
-        # Vary the seed per chunk to avoid correlated RNG artefacts,
-        # but keep it deterministic so the same (text, seed) pair
-        # always produces the same output.
-        chunk_seed = (seed + i) if seed is not None else None
+        logger.info("Generating chunk %d/%d (%d chars)", i + 1, len(chunks), len(chunk_text))
+        # Vary the seed per chunk to avoid correlated RNG artefacts, but keep it
+        # deterministic so the same (text, seed) pair always reproduces.
+        chunk_seed = resolved_seed + i
+        unit = await _render_unit(backend, chunk_text, voice_prompt, language,
+                                  chunk_seed, instruct, trim_fn, verify_fn, options, esc)
 
-        chunk_audio, chunk_sr = await backend.generate(
-            chunk_text,
-            voice_prompt,
-            language,
-            chunk_seed,
-            instruct,
-        )
-        if trim_fn is not None:
-            chunk_audio = trim_fn(chunk_audio, chunk_sr)
-
-        audio_chunks.append(np.asarray(chunk_audio, dtype=np.float32))
+        audio_chunks.append(np.asarray(unit["audio"], dtype=np.float32))
+        chunk_seeds.append(unit["seed"])
+        if verify_fn is not None:
+            verify_report.append(_chunk_report(i, unit))
+            all_verified = all_verified and bool(unit["verified"])
         if sample_rate is None:
-            sample_rate = chunk_sr
+            sample_rate = unit["sample_rate"]
 
     audio = concatenate_audio_chunks(audio_chunks, sample_rate, crossfade_ms=crossfade_ms)
-    return audio, sample_rate
+    return ChunkedTTSResult(
+        audio=audio,
+        sample_rate=sample_rate,
+        seed=resolved_seed,
+        chunk_seeds=chunk_seeds,
+        verify=verify_report if verify_report else None,
+        verified=all_verified if verify_fn is not None else None,
+    )

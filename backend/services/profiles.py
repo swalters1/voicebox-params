@@ -55,6 +55,7 @@ def _profile_to_response(
         design_prompt=getattr(profile, "design_prompt", None),
         default_engine=getattr(profile, "default_engine", None),
         personality=getattr(profile, "personality", None),
+        option_overrides=getattr(profile, "option_overrides", None),
         generation_count=generation_count,
         sample_count=sample_count,
         created_at=profile.created_at,
@@ -135,6 +136,30 @@ def validate_profile_engine(profile, engine: str) -> None:
         raise ValueError(f"Engine '{engine}' does not support cloned voice profiles")
 
 
+def _validate_option_overrides(overrides: dict | None, default_engine: str | None) -> str | None:
+    """Validate per-voice option_overrides against the engine's PARAM_SPEC.
+
+    Returns an error string (for a 400) or None. Skips validation when no
+    default_engine is set — a cloned voice may pick its engine per request, so
+    such overrides are validated leniently at generation time instead.
+    """
+    if not overrides:
+        return None
+    if not default_engine:
+        return None
+    from ..backends import get_param_spec
+    from ..utils.param_spec import resolve_options, OptionError
+
+    spec = get_param_spec(default_engine)
+    if not spec:
+        return f"engine '{default_engine}' accepts no option_overrides"
+    try:
+        resolve_options(spec, overrides)
+    except OptionError as e:
+        return str(e)
+    return None
+
+
 async def create_profile(
     data: VoiceProfileCreate,
     db: Session,
@@ -172,6 +197,10 @@ async def create_profile(
     if validation_error:
         raise ValueError(validation_error)
 
+    override_error = _validate_option_overrides(data.option_overrides, default_engine)
+    if override_error:
+        raise ValueError(override_error)
+
     db_profile = DBVoiceProfile(
         id=str(uuid.uuid4()),
         name=data.name,
@@ -183,6 +212,7 @@ async def create_profile(
         design_prompt=data.design_prompt,
         default_engine=default_engine,
         personality=data.personality,
+        option_overrides=data.option_overrides,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -397,12 +427,24 @@ async def update_profile(
     if validation_error:
         raise ValueError(validation_error)
 
+    # Validate any new overrides against the engine that will be in effect.
+    new_overrides = (
+        data.option_overrides if data.option_overrides is not None
+        else getattr(profile, "option_overrides", None)
+    )
+    override_error = _validate_option_overrides(new_overrides, default_engine)
+    if override_error:
+        raise ValueError(override_error)
+
     profile.name = data.name
     profile.description = data.description
     profile.language = data.language
     profile.personality = data.personality
     if data.default_engine is not None:
         profile.default_engine = data.default_engine or None  # empty string → NULL
+    if data.option_overrides is not None:
+        # {} clears; a dict pins. None (field omitted) leaves existing untouched.
+        profile.option_overrides = data.option_overrides or None
     profile.updated_at = datetime.utcnow()
 
     db.commit()

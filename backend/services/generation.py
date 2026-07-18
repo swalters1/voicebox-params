@@ -42,6 +42,9 @@ async def run_generation(
     max_chunk_chars: Optional[int] = None,
     crossfade_ms: Optional[int] = None,
     version_id: Optional[str] = None,
+    tts_params: Optional[dict] = None,
+    verify: bool = False,
+    verify_config: Optional[dict] = None,
 ) -> None:
     """Execute TTS inference and persist the result.
 
@@ -83,8 +86,47 @@ async def run_generation(
             gen_kwargs["max_chunk_chars"] = max_chunk_chars
         if crossfade_ms is not None:
             gen_kwargs["crossfade_ms"] = crossfade_ms
+        if tts_params:
+            gen_kwargs["options"] = tts_params
+        effective_verify_cfg: Optional[dict] = None
+        if verify:
+            # Loop-back: transcribe each rendered chunk and escalate on failure
+            # (seed-retry -> lower-temp -> split-and-recurse; FORK_NOTES §9).
+            from . import transcribe as transcribe_svc
+            from ..utils.verify import (
+                make_chunk_verifier, build_verify_config, build_escalation_config,
+            )
 
-        audio, sample_rate = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
+            vcfg = build_verify_config(verify_config, language)
+            stt_backend = transcribe_svc.get_whisper_model()
+            gen_kwargs["verify_fn"] = make_chunk_verifier(stt_backend, vcfg)
+            gen_kwargs["escalation"] = build_escalation_config(verify_config)
+            # Record the full effective verify_config (gate + escalation, minus
+            # the derived language) so the row shows exactly what ran.
+            from dataclasses import asdict
+
+            effective_verify_cfg = {k: v for k, v in asdict(vcfg).items() if k != "language"}
+            effective_verify_cfg.update(asdict(gen_kwargs["escalation"]))
+
+        result = await generate_chunked(tts_model, text, voice_prompt, **gen_kwargs)
+        audio, sample_rate, resolved_seed = result.audio, result.sample_rate, result.seed
+
+        # Assemble the reproducible record of what actually ran. ``tts_params``
+        # is already the FULLY-RESOLVED option set (the route resolved it
+        # against the engine's PARAM_SPEC), so the row alone reproduces the
+        # render (FORK_NOTES §7c).
+        gen_params_record: dict = {
+            "engine": engine,
+            "tts_params": tts_params or {},
+            "chunk_seeds": result.chunk_seeds,
+        }
+        if result.verify is not None:
+            gen_params_record["verify"] = result.verify
+            # Top-level verified flag so a caller can refuse to ship an
+            # all-attempts-failed render without walking the report (§8).
+            gen_params_record["verified"] = result.verified
+        if effective_verify_cfg is not None:
+            gen_params_record["verify_config"] = effective_verify_cfg
 
         # --- Normalize (generate and regenerate always; retry skips) -----
         if normalize or mode == "regenerate":
@@ -119,13 +161,21 @@ async def run_generation(
                 db=bg_db,
             )
 
-        await history.update_generation_status(
+        status_kwargs: dict = dict(
             generation_id=generation_id,
             status="completed",
             db=bg_db,
             audio_path=final_path,
             duration=duration,
         )
+        # Only the initial generate records seed/params onto the parent row.
+        # retry reuses the parent's existing seed; regenerate's output is a new
+        # version, so writing the take's random seed onto the parent would
+        # clobber the original render's recorded seed and gen_params.
+        if mode == "generate":
+            status_kwargs["seed"] = resolved_seed
+            status_kwargs["gen_params"] = gen_params_record
+        await history.update_generation_status(**status_kwargs)
 
     except asyncio.CancelledError:
         await history.update_generation_status(
@@ -299,9 +349,10 @@ async def generate_audio_sync(
     if crossfade_ms is not None:
         gen_kwargs["crossfade_ms"] = crossfade_ms
 
-    audio, sample_rate = await generate_chunked(
+    result = await generate_chunked(
         tts_model, text, voice_prompt, **gen_kwargs
     )
+    audio, sample_rate = result.audio, result.sample_rate
 
     if normalize:
         audio = normalize_audio(audio)
