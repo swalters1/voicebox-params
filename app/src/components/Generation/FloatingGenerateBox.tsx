@@ -257,7 +257,10 @@ export function FloatingGenerateBox({
     <motion.div
       ref={containerRef}
       className={cn(
-        'fixed',
+        // z-50 matches the app's other fixed overlays — without it the box sits
+        // in normal stacking order and page-level buttons paint over the
+        // generate control.
+        'fixed z-50',
         isStoriesRoute
           ? // Aligned with StoryContent: sidebar + list width + gap (tab bleeds with -mx-8)
             'left-[calc(5rem+360px+1.5rem)] right-8'
@@ -666,7 +669,13 @@ export function FloatingGenerateBox({
                   transition={{ duration: 0.2, ease: 'easeOut' }}
                   className="overflow-hidden"
                 >
-                  <AdvancedGeneratePanel form={form} engine={form.watch('engine') || 'qwen'} />
+                  {/* The box is anchored by `bottom`, so it grows UPWARD — an
+                      unbounded panel (engine params + all 11 verify knobs) pushes
+                      the generate button off the top of the viewport with nothing
+                      to scroll. Cap it and scroll internally instead. */}
+                  <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
+                    <AdvancedGeneratePanel form={form} engine={form.watch('engine') || 'qwen'} />
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
