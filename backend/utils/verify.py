@@ -196,6 +196,7 @@ VERIFY_PARAM_SPEC = [
     Param("split_enabled", True, desc="Stage 3: split a failing unit at a boundary and recurse"),
     Param("split_min_chars", 120, 40, 260, desc="Split target size — cross into the safe zone"),
     Param("join_silence_ms", 250, 0, 2000, desc="Sized pause at split joins (not a crossfade)"),
+    Param("max_split_depth", 2, 0, 4, desc="Recursion guard on split-and-recurse"),
 ]
 
 # Which resolved keys feed the gate (VerifyConfig) vs the escalation strategy.
@@ -205,6 +206,7 @@ _GATE_KEYS = {
 }
 _ESCALATION_KEYS = {
     "max_attempts", "retry_temperature", "split_enabled", "split_min_chars", "join_silence_ms",
+    "max_split_depth",
 }
 
 

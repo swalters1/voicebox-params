@@ -169,6 +169,59 @@ async def test_same_voice_regenerate_keeps_chars_per_second(db, runs):
 
 
 @pytest.mark.asyncio
+async def test_inherited_verify_config_is_not_validated_strictly(db, runs):
+    """Regression: a real 0.6.3 row 422'd on plain Regenerate.
+
+    ``EscalationConfig`` declares ``max_split_depth`` and it gets persisted via
+    ``asdict()``, but VERIFY_PARAM_SPEC didn't advertise it. Feeding the stored
+    record back through STRICT validation therefore rejected a config the server
+    itself had written — failing a request the user never typed anything into.
+
+    Inherited values are not user input: unknown keys get dropped, not 422'd.
+    Caller-supplied config stays strict (next test).
+    """
+    _seed_generation(
+        db,
+        gen_params={
+            "verify_config": {
+                "coverage_min": 0.8,
+                "max_split_depth": 2,  # persisted by the server, not in the spec at the time
+                "some_key_from_a_future_version": 7,
+            }
+        },
+    )
+
+    await _regen(db)  # must not raise
+
+    vc = runs[0]["verify_config"] or {}
+    assert vc.get("coverage_min") == 0.8, "known inherited keys still apply"
+    assert "some_key_from_a_future_version" not in vc
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_verify_config_is_still_strict(db, runs):
+    """Leniency applies ONLY to inherited values — a typed typo must stay loud."""
+    _seed_generation(db)
+
+    with pytest.raises(HTTPException) as exc:
+        await _regen(db, {"verify": True, "verify_config": {"nonsense_key": 1}})
+    assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_inherited_tts_params_are_not_validated_strictly(db, runs):
+    """Same rule on the TTS side: a stale stored key must not fail a regenerate."""
+    _seed_generation(
+        db,
+        gen_params={"tts_params": {"temperature": 0.7, "removed_in_a_later_engine": 1}},
+    )
+
+    await _regen(db)  # must not raise
+
+    assert runs[0]["tts_params"]["temperature"] == 0.7
+
+
+@pytest.mark.asyncio
 async def test_recast_to_unknown_profile_404s(db, runs):
     gen = _seed_generation(db)
 

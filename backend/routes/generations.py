@@ -69,13 +69,24 @@ def _resolve_tts_options(
         raise HTTPException(status_code=422, detail=str(e))
 
 
-def _resolve_verify_options(overrides: dict | None) -> dict | None:
-    """Resolve verify-gate overrides against VERIFY_PARAM_SPEC (422 on bad)."""
+def _resolve_verify_options(overrides: dict | None, *, strict: bool = True) -> dict | None:
+    """Resolve verify-gate overrides against VERIFY_PARAM_SPEC.
+
+    *strict* (the request layer) rejects unknown/out-of-range keys with a 422 —
+    the §7e discipline that makes a typo loud. Set it False for INHERITED
+    values: a stored record is not user input, and it may legitimately carry
+    keys this spec doesn't advertise, so a stale key there must not fail a
+    request the user never typed.
+    """
     if not overrides:
         return None
-    from ..utils.param_spec import resolve_options, OptionError
+    from ..utils.param_spec import resolve_options, filter_applicable, OptionError
     from ..utils.verify import VERIFY_PARAM_SPEC
 
+    if not strict:
+        overrides = filter_applicable(VERIFY_PARAM_SPEC, overrides)
+        if not overrides:
+            return None
     try:
         return resolve_options(VERIFY_PARAM_SPEC, overrides)
     except OptionError as e:
@@ -323,14 +334,18 @@ async def regenerate_generation(
 
     parent_params = (gen.gen_params or {}) if isinstance(gen.gen_params, dict) else {}
 
-    # Inherit the parent's resolved tts_params unless overridden. Re-resolved
-    # below so a cross-engine or stale key fails loudly rather than silently.
+    # Whether the option sets came from the CALLER (validate strictly — a typo
+    # should be loud) or were INHERITED from the parent's stored record
+    # (validate leniently — the user didn't type these, and a record may carry
+    # keys the spec doesn't advertise, e.g. escalation's max_split_depth).
     tts_overrides = data.tts_params
-    if tts_overrides is None:
+    tts_from_caller = tts_overrides is not None
+    if not tts_from_caller:
         tts_overrides = parent_params.get("tts_params") or None
 
     verify_overrides = data.verify_config
-    if verify_overrides is None:
+    verify_from_caller = verify_overrides is not None
+    if not verify_from_caller:
         inherited = parent_params.get("verify_config") or {}
         if isinstance(inherited, dict):
             # Drop the gate's derived/per-voice values: chars_per_second is the
@@ -341,13 +356,27 @@ async def regenerate_generation(
                 if k not in ("language",) and not (recast_profile_id and k == "chars_per_second")
             } or None
 
-    resolved_tts = _resolve_tts_options(
-        engine,
-        gen.language,
-        getattr(profile, "option_overrides", None),
-        tts_overrides,
-    )
-    resolved_verify = _resolve_verify_options(verify_overrides)
+    if tts_from_caller:
+        resolved_tts = _resolve_tts_options(
+            engine, gen.language, getattr(profile, "option_overrides", None), tts_overrides
+        )
+    else:
+        # Inherited: fold the stored params in as a lenient layer so a stale or
+        # cross-engine key is dropped rather than 422-ing a plain regenerate.
+        from ..utils.param_spec import filter_applicable
+        from ..backends import get_param_spec
+
+        spec = get_param_spec(engine)
+        resolved_tts = _resolve_tts_options(
+            engine,
+            gen.language,
+            {
+                **(getattr(profile, "option_overrides", None) or {}),
+                **(filter_applicable(spec, tts_overrides) if spec else {}),
+            },
+            None,
+        )
+    resolved_verify = _resolve_verify_options(verify_overrides, strict=verify_from_caller)
 
     gen.status = "generating"
     gen.error = None
