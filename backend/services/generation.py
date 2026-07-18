@@ -45,6 +45,7 @@ async def run_generation(
     tts_params: Optional[dict] = None,
     verify: bool = False,
     verify_config: Optional[dict] = None,
+    recast_profile_id: Optional[str] = None,
 ) -> None:
     """Execute TTS inference and persist the result.
 
@@ -161,6 +162,7 @@ async def run_generation(
                 sample_rate=sample_rate,
                 save_audio=save_audio,
                 db=bg_db,
+                profile_id=recast_profile_id,
             )
 
         status_kwargs: dict = dict(
@@ -370,8 +372,14 @@ def _save_regenerate(
     sample_rate: int,
     save_audio,
     db,
+    profile_id: Optional[str] = None,
 ) -> str:
     """Save regeneration output as a new version with auto-label.
+
+    *profile_id* is recorded only when the take was rendered by a DIFFERENT
+    voice than the parent generation ("Regenerate as ..."), so a recast take
+    isn't misattributed to the parent row's profile. Same-voice regenerates
+    leave it NULL and inherit the parent's.
 
     Returns the audio path.
     """
@@ -396,6 +404,7 @@ def _save_regenerate(
         db=db,
         effects_chain=None,
         is_default=True,
+        profile_id=profile_id,
     )
 
     return config.to_storage_path(audio_path)

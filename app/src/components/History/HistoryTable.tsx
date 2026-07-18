@@ -11,6 +11,7 @@ import {
   Square,
   Star,
   Trash2,
+  Users,
   Wand2,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -55,8 +56,10 @@ import {
 } from '@/lib/hooks/useHistory';
 import { cn } from '@/lib/utils/cn';
 import { formatDate, formatDuration, formatEngineName } from '@/lib/utils/format';
+import { useProfile } from '@/lib/hooks/useProfiles';
 import { useGenerationStore } from '@/stores/generationStore';
 import { usePlayerStore } from '@/stores/playerStore';
+import { useUIStore } from '@/stores/uiStore';
 
 export function HistoryTable() {
   const { t } = useTranslation();
@@ -271,14 +274,30 @@ export function HistoryTable() {
     }
   };
 
-  const handleRegenerate = async (generationId: string) => {
+  // The voice currently selected in the generate box (global, persisted store).
+  // "Regenerate as ..." targets it directly rather than opening a picker — the
+  // voice list is already on screen beside the history, so naming the voice in
+  // the menu item is both explicit and lower friction.
+  const selectedProfileId = useUIStore((state) => state.selectedProfileId);
+  const { data: selectedProfile } = useProfile(selectedProfileId || '');
+
+  /**
+   * Re-render a row as a new take. Passing *recastProfileId* recasts it in a
+   * different voice; the server stores the take under the same generation so
+   * castings can be compared side by side (and re-derives the per-voice pace
+   * for the verify gate).
+   */
+  const handleRegenerate = async (generationId: string, recastProfileId?: string) => {
     try {
-      await apiClient.regenerateGeneration(generationId);
+      await apiClient.regenerateGeneration(
+        generationId,
+        recastProfileId ? { profile_id: recastProfileId } : undefined,
+      );
       addPendingGeneration(generationId);
       queryClient.invalidateQueries({ queryKey: ['history'] });
     } catch (error) {
       toast({
-        title: 'Regenerate failed',
+        title: recastProfileId ? 'Recast failed' : 'Regenerate failed',
         description: error instanceof Error ? error.message : 'Could not regenerate',
         variant: 'destructive',
       });
@@ -694,6 +713,17 @@ export function HistoryTable() {
                               <RotateCcw className="mr-2 h-4 w-4" />
                               {t('history.actions.regenerate')}
                             </DropdownMenuItem>
+                            {/* Recast: only offered when the selected voice
+                                actually differs from this row's, so plain
+                                Regenerate never silently changes the voice. */}
+                            {selectedProfile && selectedProfileId !== gen.profile_id && (
+                              <DropdownMenuItem
+                                onClick={() => handleRegenerate(gen.id, selectedProfileId!)}
+                              >
+                                <Users className="mr-2 h-4 w-4" />
+                                Regenerate as {selectedProfile.name}
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem
                               onClick={() => handleDeleteClick(gen.id, gen.profile_name)}
                               disabled={deleteGeneration.isPending}

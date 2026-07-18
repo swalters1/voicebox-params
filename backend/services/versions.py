@@ -87,6 +87,7 @@ def create_version(
     effects_chain: Optional[List[dict]] = None,
     is_default: bool = False,
     source_version_id: Optional[str] = None,
+    profile_id: Optional[str] = None,
 ) -> GenerationVersionResponse:
     """Create a new version for a generation.
 
@@ -104,6 +105,7 @@ def create_version(
         effects_chain=json.dumps(effects_chain) if effects_chain else None,
         source_version_id=source_version_id,
         is_default=is_default,
+        profile_id=profile_id,
     )
     db.add(version)
     db.commit()

@@ -136,7 +136,10 @@ export interface GenParams {
   }>;
 }
 
+/** A take of a generation. `profile_id` is set only on recast takes. */
 export interface GenerationVersionResponse {
+  /** Voice that rendered THIS take, when it differs from the generation's. */
+  profile_id?: string | null;
   id: string;
   generation_id: string;
   label: string;
@@ -145,6 +148,20 @@ export interface GenerationVersionResponse {
   source_version_id?: string;
   is_default: boolean;
   created_at: string;
+}
+
+/**
+ * Optional body for POST /generate/{id}/regenerate. Omit it entirely for a
+ * plain same-voice take; pass `profile_id` to recast in a different voice.
+ * The server re-rolls the seed unless one is supplied, and does not inherit
+ * the parent's `chars_per_second` on a recast (pace is per-voice).
+ */
+export interface RegenerateRequest {
+  profile_id?: string;
+  tts_params?: Record<string, number | boolean | string>;
+  verify?: boolean;
+  verify_config?: Record<string, number | boolean | string>;
+  seed?: number;
 }
 
 export interface GenerationResponse {

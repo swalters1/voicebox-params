@@ -12,6 +12,7 @@ import type {
   ParamSpecResponse,
   GenerationRequest,
   GenerationResponse,
+  RegenerateRequest,
   GenerationVersionResponse,
   HealthResponse,
   HistoryListResponse,
@@ -281,9 +282,18 @@ class ApiClient {
     });
   }
 
-  async regenerateGeneration(generationId: string): Promise<GenerationResponse> {
+  /**
+   * Re-render a generation as a new take. Pass `profile_id` to recast it in a
+   * different voice ("Regenerate as ..."); omit the body for a plain
+   * same-voice take.
+   */
+  async regenerateGeneration(
+    generationId: string,
+    body?: RegenerateRequest,
+  ): Promise<GenerationResponse> {
     return this.request<GenerationResponse>(`/generate/${generationId}/regenerate`, {
       method: 'POST',
+      ...(body ? { body: JSON.stringify(body) } : {}),
     });
   }
 

@@ -119,6 +119,33 @@ class GenerationRequest(BaseModel):
     )
 
 
+class RegenerateRequest(BaseModel):
+    """Optional body for ``POST /generate/{id}/regenerate``.
+
+    Omitted entirely (or all-null) means "another take of the same thing" —
+    the pre-existing behaviour. Supplying ``profile_id`` makes it a **recast**
+    ("Regenerate as ..."): the same text rendered by a different voice, stored
+    as a comparable take under the same generation.
+    """
+
+    profile_id: Optional[str] = Field(
+        None,
+        description="Render with this voice instead of the generation's own. Recorded on the take.",
+    )
+    tts_params: Optional[dict] = Field(
+        None,
+        description="Engine option overrides for this take. Defaults to the parent's resolved tts_params.",
+    )
+    verify: Optional[bool] = Field(None, description="Run the verify loop on this take.")
+    verify_config: Optional[dict] = Field(
+        None,
+        description="Verify-gate overrides. NOTE: chars_per_second is deliberately NOT inherited on a recast — pace is per-voice.",
+    )
+    seed: Optional[int] = Field(
+        None, ge=0, description="Force a seed. Omitted means roll a fresh one (a take should differ)."
+    )
+
+
 class GenerationResponse(BaseModel):
     """Response model for voice generation."""
 
@@ -773,6 +800,10 @@ class GenerationVersionResponse(BaseModel):
     source_version_id: Optional[str] = None
     is_default: bool
     created_at: datetime
+    profile_id: Optional[str] = Field(
+        None,
+        description="Voice that rendered THIS take, when it differs from the generation's (recast). Null means the parent's profile.",
+    )
 
     class Config:
         from_attributes = True
