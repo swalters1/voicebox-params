@@ -21,13 +21,12 @@ import tarfile
 from pathlib import Path
 from typing import Optional
 
-from ..config import get_data_dir
+from ..config import get_data_dir, get_releases_base_url
 from ..utils.progress import get_progress_manager
 from .. import __version__
 
 logger = logging.getLogger(__name__)
 
-GITHUB_RELEASES_URL = "https://github.com/swalters1/voicebox-params/releases/download"
 
 PROGRESS_KEY = "cuda-backend"
 
@@ -285,7 +284,7 @@ async def _download_cuda_binary_locked(version: Optional[str] = None):
         status="downloading",
     )
 
-    base_url = f"{GITHUB_RELEASES_URL}/{version}"
+    base_url = f"{get_releases_base_url()}/{version}"
     server_archive = "voicebox-server-cuda.tar.gz"
     libs_archive = f"cuda-libs-{CUDA_LIBS_VERSION}.tar.gz"
 

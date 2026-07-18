@@ -152,3 +152,16 @@ def get_cloud_web_url() -> str:
 def get_cloud_api_url() -> str:
     """Base URL of the Voicebox Cloud API (bearer-authenticated sync/account)."""
     return os.environ.get("VOICEBOX_CLOUD_API_URL", "https://api.voicebox.sh").rstrip("/")
+
+
+# Where the prebuilt GPU backend binaries (CUDA/ROCm sidecars + lib bundles) are
+# downloaded from: "<base>/<tag>/<asset>". Single source of truth, overridable
+# via VOICEBOX_RELEASES_URL so a fork (or a mirror) points at its own releases
+# WITHOUT patching the download services — a hardcoded per-repo URL otherwise
+# breaks every fork the moment it ships its own backend build.
+_DEFAULT_RELEASES_URL = "https://github.com/swalters1/voicebox-params/releases/download"
+
+
+def get_releases_base_url() -> str:
+    """Base URL for downloading prebuilt backend binaries (GPU sidecars)."""
+    return os.environ.get("VOICEBOX_RELEASES_URL", _DEFAULT_RELEASES_URL).rstrip("/")
