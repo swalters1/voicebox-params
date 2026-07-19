@@ -41,6 +41,16 @@ def init_db() -> None:
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+    # Snapshot the database BEFORE any migration touches it. This must stay
+    # above run_migrations() and below create_engine(): SQLAlchemy connects
+    # lazily, so right here the file is quiescent — no open connections, no
+    # writes — which is what makes a plain file copy safe. Takes one snapshot
+    # per app version and never raises (see database/backup.py).
+    from .. import __version__
+    from .backup import snapshot_before_migration
+
+    snapshot_before_migration(_db_path, __version__, config.get_backups_dir())
+
     run_migrations(engine)
     Base.metadata.create_all(bind=engine)
 

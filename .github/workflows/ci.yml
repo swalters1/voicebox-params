@@ -56,7 +56,7 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install pytest pytest-asyncio fastapi 'sqlalchemy>=2' pydantic \
                       numpy soundfile librosa pillow typing_extensions python-multipart \
-                      httpx
+                      httpx pedalboard
 
       # Scoped to the fork's own tests on purpose. The pre-existing files in
       # backend/tests/ predate this fork and have not been audited for whether
@@ -76,4 +76,5 @@ jobs:
                  backend/tests/test_regenerate_as.py \
                  backend/tests/test_regenerate_http.py \
                  backend/tests/test_version_serialization.py \
+                 backend/tests/test_db_backup.py \
                  -v --asyncio-mode=auto
