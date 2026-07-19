@@ -78,4 +78,5 @@ jobs:
                  backend/tests/test_version_serialization.py \
                  backend/tests/test_db_backup.py \
                  backend/tests/test_db_backup_manual.py \
+                 backend/tests/test_db_restore.py \
                  -v --asyncio-mode=auto

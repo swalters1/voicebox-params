@@ -136,6 +136,19 @@ class BackupListResponse(BaseModel):
     directory: str
 
 
+class PendingRestoreResponse(BaseModel):
+    """Whether a restore is staged for the next restart.
+
+    A restore is never applied in place — the server holds the database open —
+    so it is staged and swapped in at startup before anything connects.
+    """
+
+    pending: bool
+    restored_from: Optional[str] = Field(
+        None, description="Backup the staged restore came from, when just staged"
+    )
+
+
 class RegenerateRequest(BaseModel):
     """Optional body for ``POST /generate/{id}/regenerate``.
 

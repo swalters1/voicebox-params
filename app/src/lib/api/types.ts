@@ -165,6 +165,12 @@ export interface BackupListResponse {
   directory: string;
 }
 
+/** Whether a restore is staged for the next restart. */
+export interface PendingRestoreResponse {
+  pending: boolean;
+  restored_from?: string | null;
+}
+
 /**
  * Optional body for POST /generate/{id}/regenerate. Omit it entirely for a
  * plain same-voice take; pass `profile_id` to recast in a different voice.
