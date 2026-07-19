@@ -4,6 +4,7 @@ import {
   DatabaseBackup,
   HardDriveDownload,
   Loader2,
+  Power,
   RotateCcw,
   ShieldCheck,
 } from 'lucide-react';
@@ -22,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 import { apiClient } from '@/lib/api/client';
 import type { BackupResponse } from '@/lib/api/types';
+import { usePlatform } from '@/platform/PlatformContext';
 import { SettingRow, SettingSection } from './SettingRow';
 
 function formatSize(bytes: number): string {
@@ -48,6 +50,7 @@ function formatWhen(iso: string): string {
 export function BackupSection() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const platform = usePlatform();
 
   const { data, isLoading } = useQuery({
     queryKey: ['backups'],
@@ -80,6 +83,40 @@ export function BackupSection() {
   });
 
   const [confirming, setConfirming] = useState<BackupResponse | null>(null);
+  const [restarting, setRestarting] = useState(false);
+
+  /**
+   * Restart the SERVER, not the window.
+   *
+   * A staged restore is applied by init_db() before anything connects, so it
+   * needs the sidecar process to actually stop. Closing the app does not do
+   * that when "Keep server running on close" is enabled — the restore then
+   * silently stays pending, which is exactly the trap this button removes.
+   */
+  const handleRestartServer = async () => {
+    setRestarting(true);
+    try {
+      await platform.lifecycle.restartServer();
+      // Give the server a moment to come back before re-reading state.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await queryClient.invalidateQueries({ queryKey: ['backups'] });
+      toast({
+        title: 'Server restarted',
+        description: 'If the restore applied, your data now matches the backup.',
+      });
+    } catch (error: unknown) {
+      toast({
+        title: 'Could not restart the server',
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Quit Voicebox completely (including the background server) and start it again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setRestarting(false);
+    }
+  };
 
   const restore = useMutation({
     mutationFn: (name: string) => apiClient.restoreBackup(name),
@@ -87,7 +124,8 @@ export function BackupSection() {
       queryClient.invalidateQueries({ queryKey: ['backups'] });
       toast({
         title: 'Restore staged',
-        description: 'Restart Voicebox to apply it. Your current database will be saved first.',
+        description:
+          'Use “Restart server & apply” to finish. Your current database is saved first.',
       });
     },
     onError: (error: unknown) => {
@@ -119,22 +157,36 @@ export function BackupSection() {
       {isPending && (
         <SettingRow
           title="Restore pending"
-          description="A restore is staged. Restart Voicebox to apply it — the current database will be saved aside first."
+          description="Staged and waiting. The current database is saved aside before it is replaced."
           action={
-            <Button
-              onClick={() => cancelRestore.mutate()}
-              disabled={cancelRestore.isPending}
-              variant="outline"
-              size="sm"
-            >
-              Cancel
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                onClick={() => cancelRestore.mutate()}
+                disabled={cancelRestore.isPending || restarting}
+                variant="outline"
+                size="sm"
+              >
+                Cancel
+              </Button>
+              {platform.metadata.isTauri && (
+                <Button onClick={handleRestartServer} disabled={restarting} size="sm">
+                  {restarting ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  ) : (
+                    <Power className="h-3.5 w-3.5 mr-1.5" />
+                  )}
+                  {restarting ? 'Restarting…' : 'Restart server & apply'}
+                </Button>
+              )}
+            </div>
           }
         >
-          <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-sm">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-accent" />
+          <div className="flex items-start gap-2 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-sm">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-accent mt-0.5" />
             <span className="text-muted-foreground">
-              Nothing has changed yet. The swap happens on next start.
+              Nothing has changed yet — the swap happens when the <em>server</em> next starts.
+              Closing the app window is not enough if “Keep server running” is on; use the button
+              here.
             </span>
           </div>
         </SettingRow>
@@ -231,8 +283,8 @@ export function BackupSection() {
                   .
                 </p>
                 <p>
-                  Nothing changes until you restart. Your current database is saved aside first, so
-                  this can be undone.
+                  Nothing changes until the server restarts — you will get a button to do that.
+                  Your current database is saved aside first, so this can be undone.
                 </p>
               </div>
             </AlertDialogDescription>
