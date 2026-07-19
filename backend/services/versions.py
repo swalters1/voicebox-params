@@ -37,6 +37,7 @@ def _version_response(v: DBGenerationVersion) -> GenerationVersionResponse:
         source_version_id=v.source_version_id,
         is_default=v.is_default,
         created_at=v.created_at,
+        profile_id=v.profile_id,
     )
 
 
