@@ -7,6 +7,19 @@ on:
       - main
 
 jobs:
+  # Catch version drift on the PR, not at release time. Cheap, and it is how
+  # tauri/src-tauri/Cargo.toml managed to sit at 0.5.0 for four releases: Tauri
+  # reads the version from tauri.conf.json, so nothing ever complained.
+  version-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check every version file agrees
+        run: python scripts/set_version.py --check
+
   frontend-quality:
     runs-on: ubuntu-latest
 
