@@ -27,6 +27,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fail in seconds rather than after a 35-minute build, and BEFORE anything
+      # is published. Three values must agree or the release is broken in a way
+      # that only shows up on a user's machine:
+      #
+      #   * tauri.conf.json    — CI reads it for the release tag and the sidecar
+      #                          upload target (`tagName: v__VERSION__`)
+      #   * backend/__init__.py — builds the GPU sidecar download URL as
+      #                          {releases_url}/v{__version__}/..., and the Rust
+      #                          shell version-checks the downloaded backend
+      #                          against the app version
+      #   * the pushed git tag — triggers this workflow
+      #
+      # A mismatch builds green, installs fine, and then 404s when the app tries
+      # to fetch its GPU backend. Cheaper to catch here.
+      #
+      # Skipped on workflow_dispatch, where GITHUB_REF_NAME is a branch name.
+      - name: Check version consistency
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CONF=$(jq -r '.version' tauri/src-tauri/tauri.conf.json)
+          # POSIX sed, not grep -P: this job runs on windows-latest, where the
+          # bash shell is Git Bash and PCRE support is not guaranteed.
+          PY=$(sed -n 's/^__version__ *= *"\(.*\)"/\1/p' backend/__init__.py)
+          echo "tag=$TAG  tauri.conf.json=$CONF  backend/__init__.py=$PY"
+          if [ "$TAG" != "$CONF" ] || [ "$TAG" != "$PY" ]; then
+            echo "::error::version mismatch — tag=$TAG conf=$CONF backend=$PY."
+            echo "::error::All three must match or the GPU backend download will 404."
+            exit 1
+          fi
+
       # Ubuntu runners ship with ~14 GB free; pip + PyInstaller + torch can
       # peak well above that during the build. Reclaim ~25 GB by pruning
       # preinstalled toolchains we don't use. This is what likely tripped
