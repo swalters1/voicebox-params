@@ -75,4 +75,5 @@ jobs:
           pytest backend/tests/test_verify_stt_window.py \
                  backend/tests/test_regenerate_as.py \
                  backend/tests/test_regenerate_http.py \
+                 backend/tests/test_version_serialization.py \
                  -v --asyncio-mode=auto

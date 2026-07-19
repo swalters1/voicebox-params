@@ -45,6 +45,11 @@ def _get_versions_for_generation(generation_id: str, db: Session) -> tuple:
             effects_chain=effects_chain,
             is_default=v.is_default,
             created_at=v.created_at,
+            # Both of these are stored on the row and were being dropped here:
+            # profile_id is what labels a recast take with its voice, and
+            # source_version_id drives the "from take-N" provenance line.
+            profile_id=v.profile_id,
+            source_version_id=v.source_version_id,
         ))
         if v.is_default:
             active_version_id = v.id
