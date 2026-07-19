@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -42,15 +43,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_RETAIN = 5
 
 _PREFIX = "voicebox-pre-"
+_MANUAL_PREFIX = "voicebox-manual-"
 _SUFFIX = ".db"
 # voicebox-pre-<version>-<YYYYmmdd-HHMMSS>.db
 _NAME_RE = re.compile(rf"^{re.escape(_PREFIX)}(?P<version>.+)-\d{{8}}-\d{{6}}{re.escape(_SUFFIX)}$")
+_MANUAL_RE = re.compile(
+    rf"^{re.escape(_MANUAL_PREFIX)}(?P<version>.+)-\d{{8}}-\d{{6}}{re.escape(_SUFFIX)}$"
+)
+
+
+def _safe_version(version: str) -> str:
+    # Version can contain dots but not path separators; keep it readable.
+    return version.replace("/", "-").replace("\\", "-")
 
 
 def _snapshot_name(version: str, when: datetime) -> str:
-    # Version can contain dots but not path separators; keep it readable.
-    safe = version.replace("/", "-").replace("\\", "-")
-    return f"{_PREFIX}{safe}-{when.strftime('%Y%m%d-%H%M%S')}{_SUFFIX}"
+    return f"{_PREFIX}{_safe_version(version)}-{when.strftime('%Y%m%d-%H%M%S')}{_SUFFIX}"
+
+
+def _manual_name(version: str, when: datetime) -> str:
+    return f"{_MANUAL_PREFIX}{_safe_version(version)}-{when.strftime('%Y%m%d-%H%M%S')}{_SUFFIX}"
 
 
 def existing_snapshots(backups_dir: Path) -> list[Path]:
@@ -122,3 +134,68 @@ def snapshot_before_migration(
     except Exception as e:  # never block startup on a backup failure
         logger.warning("Could not snapshot database before migration: %s", e)
         return None
+
+
+def backup_now(db_path: Path, version: str, backups_dir: Path) -> Path:
+    """Back up a LIVE database on demand (the Settings button).
+
+    Unlike :func:`snapshot_before_migration`, this runs while the server is
+    serving: connections are open and a write may be in flight. A file copy
+    here can capture a torn mid-transaction state that restores corrupt, so
+    this uses SQLite's ``VACUUM INTO`` instead — it takes a read transaction
+    and writes a consistent, already-compacted database.
+
+    Raises on failure. This one is user-initiated, so a silent no-op would be
+    worse than an error: the caller must be able to say it didn't work.
+    """
+    if not db_path.exists():
+        raise FileNotFoundError(f"No database at {db_path}")
+
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    target = backups_dir / _manual_name(version, datetime.now())
+    if target.exists():  # same-second collision
+        raise FileExistsError(f"Backup {target.name} already exists; try again")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Parameterised: the path is interpolated by SQLite, not by us.
+        conn.execute("VACUUM INTO ?", (str(target),))
+    finally:
+        conn.close()
+
+    logger.info("Manual database backup: %s (%.1f MB)", target.name, target.stat().st_size / 1e6)
+    return target
+
+
+def list_backups(backups_dir: Path) -> list[dict]:
+    """Every backup in *backups_dir*, newest first.
+
+    Covers both kinds so the UI can show one list: ``automatic`` snapshots taken
+    before a migration, and ``manual`` ones the user asked for.
+    """
+    if not backups_dir.is_dir():
+        return []
+
+    entries: list[dict] = []
+    for path in backups_dir.glob(f"voicebox-*{_SUFFIX}"):
+        auto = _NAME_RE.match(path.name)
+        manual = _MANUAL_RE.match(path.name)
+        match = auto or manual
+        if not match:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append(
+            {
+                "name": path.name,
+                "kind": "automatic" if auto else "manual",
+                "version": match.group("version"),
+                "size_bytes": stat.st_size,
+                "created_at": datetime.fromtimestamp(stat.st_mtime),
+            }
+        )
+
+    entries.sort(key=lambda e: e["name"], reverse=True)
+    return entries

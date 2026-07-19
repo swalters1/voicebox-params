@@ -11,6 +11,8 @@ import type {
   EnginesResponse,
   ParamSpecResponse,
   GenerationRequest,
+  BackupListResponse,
+  BackupResponse,
   GenerationResponse,
   RegenerateRequest,
   GenerationVersionResponse,
@@ -114,6 +116,16 @@ class ApiClient {
 
   async listProfiles(): Promise<VoiceProfileResponse[]> {
     return this.request<VoiceProfileResponse[]>('/profiles');
+  }
+
+  // Backups
+  async listBackups(): Promise<BackupListResponse> {
+    return this.request<BackupListResponse>('/backups');
+  }
+
+  /** Back up the database now. Safe while the server is serving (VACUUM INTO). */
+  async createBackup(): Promise<BackupResponse> {
+    return this.request<BackupResponse>('/backups', { method: 'POST' });
   }
 
   async getProfile(profileId: string): Promise<VoiceProfileResponse> {
