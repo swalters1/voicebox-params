@@ -55,16 +55,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install pytest pytest-asyncio fastapi 'sqlalchemy>=2' pydantic \
-                      numpy soundfile librosa pillow typing_extensions python-multipart
+                      numpy soundfile librosa pillow typing_extensions python-multipart \
+                      httpx
 
       # Scoped to the fork's own tests on purpose. The pre-existing files in
       # backend/tests/ predate this fork and have not been audited for whether
       # they pass in a lean environment; widen this list once they have been,
       # rather than pinning a red suite now.
+      #
+      # NOTE: this explicit list fails SILENTLY when a new fork test file is
+      # added and not listed here — a green run that skipped the new tests.
+      # That already happened once. Until the fork's tests live in their own
+      # directory that can be run wholesale, adding a file here is part of
+      # adding a test.
       - name: Run fork backend tests
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest backend/tests/test_verify_stt_window.py \
                  backend/tests/test_regenerate_as.py \
+                 backend/tests/test_regenerate_http.py \
                  -v --asyncio-mode=auto
