@@ -34,6 +34,14 @@ def init_db() -> None:
     _db_path = config.get_db_path()
     _db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Apply a staged restore BEFORE the engine exists. This has to be the first
+    # thing that touches the database file: once create_engine has connected,
+    # the file cannot be replaced. Never raises — an unapplied restore stays
+    # staged and is retried next start (see database/restore.py).
+    from .restore import apply_pending_restore
+
+    apply_pending_restore(_db_path, config.get_backups_dir())
+
     engine = create_engine(
         f"sqlite:///{_db_path}",
         connect_args={"check_same_thread": False},

@@ -14,6 +14,7 @@ import type {
   BackupListResponse,
   BackupResponse,
   GenerationResponse,
+  PendingRestoreResponse,
   RegenerateRequest,
   GenerationVersionResponse,
   HealthResponse,
@@ -126,6 +127,24 @@ class ApiClient {
   /** Back up the database now. Safe while the server is serving (VACUUM INTO). */
   async createBackup(): Promise<BackupResponse> {
     return this.request<BackupResponse>('/backups', { method: 'POST' });
+  }
+
+  /**
+   * Stage a backup to be restored on the next restart. The database is not
+   * replaced now — the server holds it open — so the swap happens at startup.
+   */
+  async restoreBackup(name: string): Promise<PendingRestoreResponse> {
+    return this.request<PendingRestoreResponse>(`/backups/${encodeURIComponent(name)}/restore`, {
+      method: 'POST',
+    });
+  }
+
+  async getPendingRestore(): Promise<PendingRestoreResponse> {
+    return this.request<PendingRestoreResponse>('/backups/pending');
+  }
+
+  async cancelPendingRestore(): Promise<PendingRestoreResponse> {
+    return this.request<PendingRestoreResponse>('/backups/pending', { method: 'DELETE' });
   }
 
   async getProfile(profileId: string): Promise<VoiceProfileResponse> {

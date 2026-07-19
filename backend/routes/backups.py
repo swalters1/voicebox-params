@@ -12,6 +12,13 @@ from fastapi import APIRouter, HTTPException
 
 from .. import config, models
 from ..database.backup import backup_now, list_backups
+from ..database.restore import (
+    PENDING_NAME,
+    RestoreError,
+    cancel_pending_restore,
+    pending_restore,
+    stage_restore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,3 +64,47 @@ async def create_backup():
         size_bytes=stat.st_size,
         created_at=datetime.fromtimestamp(stat.st_mtime),
     )
+
+
+@router.get("/backups/pending", response_model=models.PendingRestoreResponse)
+async def get_pending_restore():
+    """Whether a restore is staged and waiting for the next restart."""
+    pending = pending_restore(config.get_backups_dir())
+    return models.PendingRestoreResponse(pending=pending is not None)
+
+
+@router.delete("/backups/pending", response_model=models.PendingRestoreResponse)
+async def delete_pending_restore():
+    """Cancel a staged restore."""
+    cancel_pending_restore(config.get_backups_dir())
+    return models.PendingRestoreResponse(pending=False)
+
+
+@router.post("/backups/{name}/restore", response_model=models.PendingRestoreResponse)
+async def restore_backup(name: str):
+    """Stage a backup to be restored on the next restart.
+
+    The database is NOT replaced now — the server has it open. The file is
+    validated and staged, then swapped in at startup before anything connects.
+    The current database is saved aside first, so restoring the wrong backup is
+    recoverable.
+    """
+    from ..database.models import Base
+
+    backups_dir = config.get_backups_dir()
+
+    # Resolve within the backups directory: never let a name escape it.
+    candidate = (backups_dir / name).resolve()
+    if candidate.parent != backups_dir.resolve() or name == PENDING_NAME:
+        raise HTTPException(status_code=400, detail="Invalid backup name")
+
+    try:
+        stage_restore(candidate, backups_dir, Base.metadata)
+    except RestoreError as e:
+        # The backup is unfit — a user is watching, so say why.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Staging restore failed")
+        raise HTTPException(status_code=500, detail=f"Could not stage restore: {e}")
+
+    return models.PendingRestoreResponse(pending=True, restored_from=name)
