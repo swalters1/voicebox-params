@@ -140,6 +140,13 @@ def get_models_dir() -> Path:
     return path
 
 
+def get_backups_dir() -> Path:
+    """Get backups directory path (database snapshots)."""
+    path = _data_dir / "backups"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 # Voicebox Cloud (backup & sync). Two hosts: the web app owns auth + device
 # pairing (voicebox.sh), the API owns sync + account endpoints
 # (api.voicebox.sh). Override both for local development, e.g.
