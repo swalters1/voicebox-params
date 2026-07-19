@@ -119,6 +119,23 @@ class GenerationRequest(BaseModel):
     )
 
 
+class BackupResponse(BaseModel):
+    """One database backup on disk."""
+
+    name: str
+    kind: str = Field(description="'automatic' (pre-migration snapshot) or 'manual'")
+    version: str = Field(description="App version the backup was taken under")
+    size_bytes: int
+    created_at: datetime
+
+
+class BackupListResponse(BaseModel):
+    """Backups on disk, newest first, plus where they live."""
+
+    backups: List[BackupResponse]
+    directory: str
+
+
 class RegenerateRequest(BaseModel):
     """Optional body for ``POST /generate/{id}/regenerate``.
 

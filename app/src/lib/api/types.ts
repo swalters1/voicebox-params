@@ -150,6 +150,21 @@ export interface GenerationVersionResponse {
   created_at: string;
 }
 
+/** One database backup on disk. */
+export interface BackupResponse {
+  name: string;
+  /** 'automatic' = taken before a migration; 'manual' = user asked for it. */
+  kind: 'automatic' | 'manual';
+  version: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+export interface BackupListResponse {
+  backups: BackupResponse[];
+  directory: string;
+}
+
 /**
  * Optional body for POST /generate/{id}/regenerate. Omit it entirely for a
  * plain same-voice take; pass `profile_id` to recast in a different voice.
