@@ -71,13 +71,24 @@ export function AdvancedGeneratePanel({ form, engine }: AdvancedGeneratePanelPro
         />
       );
     }
-    if (typeof spec.default === 'number') {
+    // Numeric slider — either a concrete numeric default, or an OPTIONAL numeric
+    // (default null with numeric bounds, e.g. TADA's speed_up_factor). The
+    // optional case reads "off" until touched and is only sent once the user
+    // moves it, so the engine keeps its own default.
+    const hasNumericDefault = typeof spec.default === 'number';
+    const isOptionalNumeric =
+      spec.default == null && typeof spec.min === 'number' && typeof spec.max === 'number';
+    if (hasNumericDefault || isOptionalNumeric) {
       const min = typeof spec.min === 'number' ? spec.min : 0;
       const max = typeof spec.max === 'number' ? spec.max : 1;
       const isInt =
-        Number.isInteger(spec.default) && Number.isInteger(min) && Number.isInteger(max);
+        hasNumericDefault &&
+        Number.isInteger(spec.default as number) &&
+        Number.isInteger(min) &&
+        Number.isInteger(max);
       const step = isInt ? 1 : Math.max(0.01, Number(((max - min) / 100).toFixed(2)));
-      const cur = Number(value ?? spec.default);
+      const isSet = value !== undefined;
+      const cur = Number(value ?? (hasNumericDefault ? (spec.default as number) : min));
       return (
         <div className="flex flex-1 items-center gap-2">
           <Slider
@@ -89,7 +100,7 @@ export function AdvancedGeneratePanel({ form, engine }: AdvancedGeneratePanelPro
             className="flex-1"
           />
           <span className="w-12 text-right text-xs tabular-nums text-muted-foreground">
-            {isInt ? cur : cur.toFixed(2)}
+            {!isSet && isOptionalNumeric ? 'off' : isInt ? cur : cur.toFixed(2)}
           </span>
         </div>
       );

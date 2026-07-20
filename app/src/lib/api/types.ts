@@ -97,7 +97,8 @@ export interface GenerationRequest {
 /** One entry of a declarative param spec (GET /engines, /verify/params, /transcribe/params). */
 export interface ParamSpec {
   name: string;
-  default: number | boolean | string;
+  /** null = optional numeric with no default ("off" until the user sets it). */
+  default: number | boolean | string | null;
   min?: number | null;
   max?: number | null;
   stage?: string;

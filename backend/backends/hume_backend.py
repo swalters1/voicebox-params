@@ -30,6 +30,7 @@ from .base import (
     model_load_progress,
 )
 from ..utils.cache import get_cache_key, get_cached_voice_prompt, cache_voice_prompt
+from ..utils.param_spec import Param, resolve_options
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,26 @@ _TADA_CODEC_WEIGHT_FILES = [
 
 class HumeTadaBackend:
     """HumeAI TADA TTS backend for high-quality voice cloning."""
+
+    # Declarative tuning surface (FORK_NOTES §7). Until now TADA's generate()
+    # was called with NOTHING but (prompt, text) — none of its InferenceOptions
+    # were reachable. Defaults here mirror hume-tada's InferenceOptions exactly,
+    # so an empty request reproduces the previous behaviour byte-for-byte.
+    #
+    # These map into a single tada InferenceOptions dataclass (see generate()).
+    # Bounds are deliberately generous, not tuned: per FORK_NOTES §4 every value
+    # needs a seed-fixed sweep before it's trusted — this just makes the sweep
+    # possible. speed_up_factor defaults to None (library "off"); resolve_options
+    # skips range-checking a None default and only validates an explicit value.
+    PARAM_SPEC: ClassVar[list] = [
+        Param("text_temperature", 0.6, 0.05, 2.0, desc="LM sampling temp — ↑ variety, ↓ flatness"),
+        Param("text_top_p", 0.9, 0.0, 1.0, desc="LM nucleus sampling"),
+        Param("text_repetition_penalty", 1.1, 1.0, 3.0, desc="Penalize repeated tokens"),
+        Param("acoustic_cfg_scale", 1.6, 0.0, 5.0, desc="Acoustic guidance — adherence vs freedom"),
+        Param("duration_cfg_scale", 1.0, 0.0, 5.0, desc="Duration guidance (pacing lever — test first)"),
+        Param("num_flow_matching_steps", 10, 1, 50, desc="Diffusion steps — quality vs speed"),
+        Param("speed_up_factor", None, 0.5, 4.0, desc="↑ speeds delivery / shortens pauses (test first)"),
+    ]
 
     _load_lock: ClassVar[threading.Lock] = threading.Lock()
 
@@ -287,6 +308,7 @@ class HumeTadaBackend:
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio from text using HumeAI TADA.
@@ -297,11 +319,18 @@ class HumeTadaBackend:
             language: Language code (en, ar, de, es, fr, it, ja, pl, pt, zh)
             seed: Random seed for reproducibility
             instruct: Not supported by TADA (ignored)
+            options: Per-request overrides for PARAM_SPEC. Resolved defensively
+                (defaults filled), then mapped into a tada InferenceOptions.
 
         Returns:
             Tuple of (audio_array, sample_rate=24000)
         """
         await self.load_model(self.model_size)
+
+        # Fill defaults from PARAM_SPEC (single source of truth). Validation
+        # already happened at the request boundary, so unknown keys are ignored
+        # rather than rejected here.
+        resolved = resolve_options(self.PARAM_SPEC, options or {}, reject_unknown=False)
 
         def _generate_sync():
             import torch
@@ -334,11 +363,26 @@ class HumeTadaBackend:
             # the language is already baked in. For simplicity, we don't
             # reload the encoder here.
 
-            logger.info(f"[TADA] Generating ({language}), text length: {len(text)}")
+            # Map resolved options into a tada InferenceOptions. hume-tada is
+            # installed unpinned (--no-deps), so filter to the fields the
+            # actually-bundled version declares rather than trusting a snapshot
+            # of its API — a dropped/renamed field then skips instead of raising.
+            from dataclasses import fields as _dc_fields
+            from tada.modules.tada import InferenceOptions
+
+            known = {f.name for f in _dc_fields(InferenceOptions)}
+            inf_kwargs = {k: v for k, v in resolved.items() if k in known and v is not None}
+            inference_options = InferenceOptions(**inf_kwargs)
+
+            logger.info(
+                "[TADA] Generating (%s), text length: %d, options=%s",
+                language, len(text), inf_kwargs,
+            )
 
             output = self.model.generate(
                 prompt=prompt,
                 text=text,
+                inference_options=inference_options,
             )
 
             # output.audio is a list of tensors (one per batch item)
