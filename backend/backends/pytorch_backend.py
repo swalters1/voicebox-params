@@ -21,10 +21,25 @@ from .base import (
 )
 from ..utils.cache import get_cache_key, get_cached_voice_prompt, cache_voice_prompt
 from ..utils.audio import load_audio
+from ..utils.param_spec import Param, resolve_options
 
 
 class PyTorchTTSBackend:
     """PyTorch-based TTS backend using Qwen3-TTS."""
+
+    # Declarative tuning surface (FORK_NOTES §7). Until now Qwen was called with
+    # only (text, prompt, language, instruct) — none of its sampling knobs were
+    # reachable. Defaults mirror qwen-tts's own (its generate resolves
+    # user-value -> generate_config.json -> these), so an empty request is
+    # unchanged. Bounds are generous, not tuned (§4). The main use is per-unit
+    # expressiveness: a shouted line hotter, a calm aside cooler — the pipeline
+    # already renders one line at a time, so this rides on requests it sends.
+    PARAM_SPEC: ClassVar[list] = [
+        Param("temperature", 0.9, 0.05, 2.0, desc="Sampling temp — ↑ energy/variety, ↓ control"),
+        Param("top_k", 50, 0, 1000, desc="Top-k sampling (0 = off)"),
+        Param("top_p", 1.0, 0.0, 1.0, desc="Nucleus sampling"),
+        Param("repetition_penalty", 1.05, 1.0, 3.0, desc="Penalize repeated tokens"),
+    ]
 
     def __init__(self, model_size: str = "1.7B"):
         self.model = None
@@ -206,6 +221,7 @@ class PyTorchTTSBackend:
         language: str = "en",
         seed: Optional[int] = None,
         instruct: Optional[str] = None,
+        options: Optional[dict] = None,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate audio from text using voice prompt.
@@ -216,12 +232,20 @@ class PyTorchTTSBackend:
             language: Language code (en or zh)
             seed: Random seed for reproducibility
             instruct: Natural language instruction for speech delivery control
+                (honored only by Qwen CustomVoice; the Base model ignores it)
+            options: Per-request overrides for PARAM_SPEC (temperature, top_k,
+                top_p, repetition_penalty). Forwarded to generate_voice_clone,
+                which resolves user value over its config/defaults.
 
         Returns:
             Tuple of (audio_array, sample_rate)
         """
         # Load model
         await self.load_model_async(None)
+
+        # Fill defaults from PARAM_SPEC (single source of truth). Validation
+        # already happened at the request boundary, so unknown keys are ignored.
+        call_kwargs = resolve_options(self.PARAM_SPEC, options or {}, reject_unknown=False)
 
         def _generate_sync():
             """Run synchronous generation in thread pool."""
@@ -231,11 +255,14 @@ class PyTorchTTSBackend:
 
             # See _create_prompt_sync comment — inference runs with the
             # process's default HF_HUB_OFFLINE state (issue #462).
+            # Sampling knobs pass through generate_voice_clone(**kwargs); it
+            # resolves user value -> generate_config.json -> library default.
             wavs, sample_rate = self.model.generate_voice_clone(
                 text=text,
                 voice_clone_prompt=voice_prompt,
                 language=LANGUAGE_CODE_TO_NAME.get(language, "auto"),
                 instruct=instruct,
+                **call_kwargs,
             )
             return wavs[0], sample_rate
 
