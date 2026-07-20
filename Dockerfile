@@ -20,9 +20,12 @@ COPY package.json bun.lock CHANGELOG.md ./
 COPY app/ ./app/
 COPY web/ ./web/
 
-# Strip workspaces not needed for web build, and fix trailing comma
-RUN sed -i '/"tauri"/d; /"landing"/d' package.json && \
-    sed -i -z 's/,\n  ]/\n  ]/' package.json
+# Restrict workspaces to what the web build needs — the tauri/ and landing/
+# dirs are not copied into this stage. Rewrite the JSON with bun instead of
+# sed so the build doesn't depend on exact whitespace / trailing-comma /
+# line-ending handling (the old sed pipeline left an invalid trailing comma
+# on some sed builds).
+RUN bun -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync("package.json","utf8"));p.workspaces=["app","web"];fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'
 RUN bun install --no-save
 # Build frontend (skip tsc — upstream has pre-existing type errors)
 RUN cd web && bunx --bun vite build
@@ -93,6 +96,12 @@ COPY --from=frontend --chown=voicebox:voicebox /build/web/dist /app/frontend/
 RUN mkdir -p /app/data/generations /app/data/profiles /app/data/cache \
     && chown -R voicebox:voicebox /app/data
 
+# Pre-create the HuggingFace cache dir owned by the app user. A named volume
+# mounted here (docker-compose) is created root-owned unless the image already
+# owns the path, which would leave the non-root user unable to cache models.
+RUN mkdir -p /home/voicebox/.cache/huggingface \
+    && chown -R voicebox:voicebox /home/voicebox/.cache
+
 # Expose the API port
 EXPOSE 17493
 
@@ -102,5 +111,8 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=60s \
 
 # Entrypoint joins GPU groups then drops to the voicebox user
 COPY --chmod=755 scripts/rocm-entrypoint.sh /usr/local/bin/entrypoint.sh
+# Strip any CRLF from Windows checkouts (core.autocrlf) so the shebang resolves;
+# no-op on a clean LF file.
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "17493"]

@@ -9,6 +9,8 @@ landing/
 docs/
 mlx-test/
 scripts/
+# ...but the Dockerfile's runtime stage needs the container entrypoint.
+!scripts/rocm-entrypoint.sh
 
 # Dependencies & build artifacts (rebuilt in Docker)
 node_modules/

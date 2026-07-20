@@ -1,0 +1,9 @@
+# Shell scripts must stay LF — they run in Linux containers / CI. A CRLF
+# checkout (core.autocrlf=true on Windows) turns the shebang into "#!/bin/sh\r"
+# and the kernel can't find the interpreter ("no such file or directory").
+*.sh text eol=lf
+scripts/rocm-entrypoint.sh text eol=lf
+
+# Docker entrypoints and compose are consumed by Linux tooling — keep LF.
+Dockerfile text eol=lf
+docker-compose*.yml text eol=lf

@@ -1,0 +1,40 @@
+---
+# CUDA (NVIDIA GPU) overlay for Voicebox
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cuda.yml up --build
+#
+# Requires nvidia-container-toolkit on the host. On WSL2 the Windows NVIDIA
+# driver already exposes the GPU to the distro — you only need the toolkit
+# inside WSL so Docker can pass the device through. Verify the wire-up with:
+#
+#   docker run --rm --gpus all nvidia/cuda:12.4.0-base nvidia-smi
+#
+# No build args are needed. The default (cpu) build variant installs the
+# standard PyTorch wheel, which on linux/amd64 is CUDA-enabled and bundles its
+# own CUDA runtime libraries — so the desktop app's separate cuda-libs sidecar
+# download is not involved here. backend get_torch_device() auto-selects
+# "cuda" the moment the GPU is visible inside the container; no code change.
+
+services:
+  voicebox:
+    # Hand the NVIDIA GPU(s) to the container. This is the Compose-native
+    # equivalent of `--gpus all` and matches how the rocm overlay exposes
+    # /dev/kfd + /dev/dri for AMD.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          # Model load + audio processing needs more host RAM than the CPU
+          # default (8G). VRAM is governed by the GPU, not this limit.
+          cpus: '8'
+          memory: 16G
+
+    environment:
+      # Redundant with the device reservation above, but explicit and harmless;
+      # some toolkit configs key off these instead of the reservation block.
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
