@@ -61,15 +61,20 @@ def get_data_dir() -> Path:
 
 
 def to_storage_path(path: str | Path) -> str:
-    """Convert a filesystem path to a DB-safe path relative to the data dir."""
+    """Convert a filesystem path to a DB-safe path relative to the data dir.
+
+    Always emits POSIX (forward-slash) separators so the stored value is
+    portable across operating systems — a DB written on Windows must resolve
+    when the same data dir is opened on Linux (e.g. a Docker container).
+    """
     resolved_path = Path(path).resolve()
 
     relative_to_any_data_dir = _path_relative_to_any_data_dir(resolved_path)
     if relative_to_any_data_dir is not None:
-        return str(relative_to_any_data_dir)
+        return relative_to_any_data_dir.as_posix()
 
     try:
-        return str(resolved_path.relative_to(_data_dir))
+        return resolved_path.relative_to(_data_dir).as_posix()
     except ValueError:
         return str(resolved_path)
 
@@ -79,7 +84,11 @@ def resolve_storage_path(path: str | Path | None) -> Path | None:
     if path is None:
         return None
 
-    stored_path = Path(path)
+    # Older records (and any DB created on Windows) may use backslash
+    # separators. Normalize to POSIX before parsing so they resolve on any OS;
+    # backslash is never a character in the relative paths we store, so this is
+    # safe. Windows still accepts the forward slashes in the result.
+    stored_path = Path(str(path).replace("\\", "/"))
     if stored_path.is_absolute():
         rebased_path = _path_relative_to_any_data_dir(stored_path)
         if rebased_path is not None:
