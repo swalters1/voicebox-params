@@ -76,11 +76,16 @@ RUN groupadd -r voicebox && \
 
 WORKDIR /app
 
-# Install only runtime system dependencies (gosu drops root in the entrypoint)
+# Install only runtime system dependencies (gosu drops root in the entrypoint).
+# build-essential is required at RUNTIME, not just build time: Qwen's Triton
+# kernels JIT-compile a C launcher on any cache miss and shell out to a C
+# compiler — without one, the first cold render fails ("Triton has no C
+# compiler"). Python.h and ptxas are already present in the base/torch wheel.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     gosu \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed Python packages from builder stage
