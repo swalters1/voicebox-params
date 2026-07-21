@@ -8,7 +8,7 @@ tauri/
 landing/
 docs/
 mlx-test/
-scripts/
+scripts/*
 # ...but the Dockerfile's runtime stage needs the container entrypoint.
 !scripts/rocm-entrypoint.sh
 

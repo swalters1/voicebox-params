@@ -89,6 +89,11 @@ def resolve_storage_path(path: str | Path | None) -> Path | None:
     # backslash is never a character in the relative paths we store, so this is
     # safe. Windows still accepts the forward slashes in the result.
     stored_path = Path(str(path).replace("\\", "/"))
+    # Empty paths (e.g. failed generations) must not resolve to the data
+    # dir itself, which exists and would defeat the callers' 404 guards.
+    # Path("") is truthy, so check parts rather than the raw value.
+    if not stored_path.parts:
+        return None
     if stored_path.is_absolute():
         rebased_path = _path_relative_to_any_data_dir(stored_path)
         if rebased_path is not None:
