@@ -71,6 +71,7 @@ async def create_generation(
     engine: Optional[str] = "qwen",
     model_size: Optional[str] = None,
     source: str = "manual",
+    gen_params: Optional[dict] = None,
 ) -> GenerationResponse:
     """
     Create a new generation history entry.
@@ -92,6 +93,11 @@ async def create_generation(
             /generate calls; ``"personality_speak"`` for rows created
             by the /profiles/{id}/speak endpoint. Enables filtering the
             history view for personality-driven output.
+        gen_params: The RESOLVED render params, recorded at creation so the row
+            is self-describing even if the render dies. A successful generate
+            overwrites this with the full record (adding chunk_seeds and the
+            verify report); a row that fails keeps what it was meant to run
+            with, which is what ``/generate/{id}/retry`` reproduces from.
 
     Returns:
         Created generation entry
@@ -109,6 +115,7 @@ async def create_generation(
         model_size=model_size,
         status=status,
         source=source,
+        gen_params=gen_params,
         created_at=datetime.utcnow(),
     )
 

@@ -193,6 +193,15 @@ async def generate_speech(
         engine=engine,
         model_size=model_size if engine_has_model_sizes(engine) else None,
         source=source,
+        # Record the resolved params up front so the row is self-describing even
+        # if the render dies. A completed generate overwrites this with the full
+        # record; a FAILED row keeps it, which is the only reason retry has
+        # anything to reproduce from.
+        gen_params={
+            "engine": engine,
+            "tts_params": resolved_options or {},
+            **({"verify_config": resolved_verify} if resolved_verify else {}),
+        },
     )
 
     task_manager.start_generation(
@@ -249,6 +258,14 @@ async def retry_generation(generation_id: str, db: Session = Depends(get_db)):
     if (gen.status or "completed") != "failed":
         raise HTTPException(status_code=400, detail="Only failed generations can be retried")
 
+    # Reproduce from what the row was RENDERED with, never from current config.
+    # Re-deriving would silently swap a deliberately-set temperature for the
+    # engine default — invisible in the row, audible only in the output. Stored
+    # values are already resolved, so they pass through as-is.
+    stored = (gen.gen_params or {}) if isinstance(gen.gen_params, dict) else {}
+    stored_tts = stored.get("tts_params") or None
+    stored_verify_cfg = stored.get("verify_config") or None
+
     gen.status = "generating"
     gen.error = None
     gen.audio_path = ""
@@ -275,6 +292,9 @@ async def retry_generation(generation_id: str, db: Session = Depends(get_db)):
             seed=gen.seed,
             instruct=gen.instruct,
             mode="retry",
+            tts_params=stored_tts,
+            verify=bool(stored_verify_cfg),
+            verify_config=stored_verify_cfg,
         )
     )
 
